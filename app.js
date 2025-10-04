@@ -30,6 +30,8 @@ import userRoutes from "./routes/user.js";
 import referralRoutes from "./routes/referral.js";
 import adminRoutes from "./routes/admin.js";
 import packagesRoutes from "./routes/packages.js";
+import dashboardRoutes from "./routes/dashboard.js";
+import uploadRoutes from "./routes/upload.js";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler.js";
 // import { sessionConfig } from "./config/session.js";
 
@@ -46,6 +48,7 @@ app.use(
   })
 );
 app.use(express.json());
+app.use(express.static("uploads")); // Serve uploaded files (images and videos)
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "smart-social-secret",
@@ -88,6 +91,8 @@ app.use("/api", userRoutes);
 app.use("/api/referral", referralRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/packages", packagesRoutes);
+app.use("/api/dashboard", dashboardRoutes);
+app.use("/api", uploadRoutes);
 
 // Error handling middleware (must be last)
 app.use(notFoundHandler);
