@@ -12,9 +12,10 @@ router.get("/twitter/auth", authMiddleware, async (req, res) => {
       appKey: process.env.TWITTER_API_KEY,
       appSecret: process.env.TWITTER_API_SECRET,
     });
-    const { url, oauth_token, oauth_token_secret } = await twitterClient.generateAuthLink(
-      "http://localhost:5000/api/twitter/callback"
-    );
+    const { url, oauth_token, oauth_token_secret } =
+      await twitterClient.generateAuthLink(
+        "https://www.sushiluha.com/api/twitter/callback"
+      );
     req.session.oauthToken = oauth_token;
     req.session.oauthTokenSecret = oauth_token_secret;
     req.session.userId = req.userId;
@@ -30,7 +31,12 @@ router.get("/twitter/callback", async (req, res) => {
   const { oauth_token, oauth_verifier } = req.query;
   const { oauthToken, oauthTokenSecret, userId } = req.session;
 
-  if (!userId || !oauthToken || !oauthTokenSecret || oauth_token !== oauthToken) {
+  if (
+    !userId ||
+    !oauthToken ||
+    !oauthTokenSecret ||
+    oauth_token !== oauthToken
+  ) {
     console.error("Twitter callback failed: Session expired or invalid token");
     return res.status(400).json({ error: "Session expired or invalid token" });
   }
@@ -43,7 +49,9 @@ router.get("/twitter/callback", async (req, res) => {
       accessToken: oauth_token,
       accessSecret: oauthTokenSecret,
     });
-    const { accessToken, accessSecret, screenName } = await twitterClient.login(oauth_verifier);
+    const { accessToken, accessSecret, screenName } = await twitterClient.login(
+      oauth_verifier
+    );
     await Account.findOneAndUpdate(
       { userId, platform: "Twitter" },
       { accessToken, accessSecret, displayName: screenName },

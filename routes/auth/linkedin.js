@@ -8,8 +8,10 @@ const router = express.Router();
 router.get("/linkedin/auth", authMiddleware, (req, res) => {
   try {
     console.log("Initiating LinkedIn auth for userId:", req.userId);
-    const redirectUri = "http://localhost:5000/api/linkedin/callback";
-    const url = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${process.env.LINKEDIN_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=w_member_social`;
+    const redirectUri = "https://www.sushiluha.com/api/linkedin/callback";
+    const url = `https://www.linkedin.com/oauth/v2/authorization?response_type=code&client_id=${
+      process.env.LINKEDIN_CLIENT_ID
+    }&redirect_uri=${encodeURIComponent(redirectUri)}&scope=w_member_social`;
     req.session.userId = req.userId;
     console.log("LinkedIn auth URL generated:", url);
     res.json({ url });
@@ -22,7 +24,12 @@ router.get("/linkedin/auth", authMiddleware, (req, res) => {
 router.get("/linkedin/callback", async (req, res) => {
   const { code, error, error_description } = req.query;
   const { userId } = req.session;
-  console.log("LinkedIn callback hit:", { code, error, error_description, userId });
+  console.log("LinkedIn callback hit:", {
+    code,
+    error,
+    error_description,
+    userId,
+  });
 
   if (!userId) {
     console.error("LinkedIn callback error: Session expired");
@@ -35,7 +42,10 @@ router.get("/linkedin/callback", async (req, res) => {
   }
 
   if (error) {
-    console.error("LinkedIn callback OAuth error:", { error, error_description });
+    console.error("LinkedIn callback OAuth error:", {
+      error,
+      error_description,
+    });
     return res.send(`
       <script>
         window.opener.postMessage({ type: "AUTH_ERROR", error: "${error}", description: "${error_description}" }, "*");
@@ -44,7 +54,7 @@ router.get("/linkedin/callback", async (req, res) => {
     `);
   }
 
-  const redirectUri = "http://localhost:5000/api/linkedin/callback";
+  const redirectUri = "https://www.sushiluha.com/api/linkedin/callback";
 
   try {
     console.log("Requesting LinkedIn access token...");
@@ -75,10 +85,15 @@ router.get("/linkedin/callback", async (req, res) => {
       </script>
     `);
   } catch (error) {
-    console.error("LinkedIn callback error:", error.response?.data || error.message);
+    console.error(
+      "LinkedIn callback error:",
+      error.response?.data || error.message
+    );
     res.send(`
       <script>
-        window.opener.postMessage({ type: "AUTH_ERROR", error: "${error.response?.data?.message || error.message}" }, "*");
+        window.opener.postMessage({ type: "AUTH_ERROR", error: "${
+          error.response?.data?.message || error.message
+        }" }, "*");
         window.close();
       </script>
     `);

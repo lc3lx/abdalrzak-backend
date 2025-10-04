@@ -9,7 +9,7 @@ const router = express.Router();
 const oauth2Client = new google.auth.OAuth2(
   process.env.YOUTUBE_CLIENT_ID,
   process.env.YOUTUBE_CLIENT_SECRET,
-  "http://localhost:5000/api/youtube/callback"
+  "https://www.sushiluha.com/api/youtube/callback"
 );
 
 // Scopes required for YouTube API

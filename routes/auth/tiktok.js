@@ -8,7 +8,7 @@ const router = express.Router();
 router.get("/tiktok/auth", authMiddleware, (req, res) => {
   try {
     console.log("Initiating TikTok auth...");
-    const redirectUri = "http://localhost:5000/api/tiktok/callback";
+    const redirectUri = "https://www.sushiluha.com/api/tiktok/callback";
     const scope = "user.info.basic,video.publish";
     const state = Math.random().toString(36).substring(7);
 
@@ -44,7 +44,7 @@ router.get("/tiktok/callback", async (req, res) => {
     return res.status(400).json({ error: "Invalid state parameter" });
   }
 
-  const redirectUri = "http://localhost:5000/api/tiktok/callback";
+  const redirectUri = "https://www.sushiluha.com/api/tiktok/callback";
 
   try {
     console.log("Processing TikTok callback...");

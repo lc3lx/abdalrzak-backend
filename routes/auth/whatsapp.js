@@ -169,7 +169,7 @@ async function processWhatsAppMessage(message, metadata) {
 async function triggerAutoReply(userId, messageId) {
   try {
     const response = await fetch(
-      "http://localhost:5000/api/auto-reply/process",
+      "https://www.sushiluha.com/api/auto-reply/process",
       {
         method: "POST",
         headers: {
