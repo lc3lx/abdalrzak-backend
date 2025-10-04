@@ -39,15 +39,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: (origin, callback) => {
-      const allowedOrigins = [
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "https://www.sushiluha.com",
-      ];
-      if (!origin || allowedOrigins.includes(origin)) callback(null, true);
-      else callback(new Error("Not allowed by CORS"));
-    },
+    origin: true, // يقبل من جميع الأصول
     credentials: true,
   })
 );
