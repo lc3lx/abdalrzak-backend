@@ -146,7 +146,8 @@ function verifyInstagramSignature(body, signature) {
 // Trigger auto-reply for Instagram message
 async function triggerAutoReply(userId, messageId) {
   try {
-    const response = await fetch("http://localhost:5000/api/auto-reply/process", {
+    const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+    const response = await fetch(`${baseUrl}/api/auto-reply/process`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

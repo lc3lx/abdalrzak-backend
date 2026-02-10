@@ -11,7 +11,7 @@ const commentSchema = new mongoose.Schema(
     platform: {
       type: String,
       required: true,
-      enum: ["Twitter", "Facebook", "Instagram", "LinkedIn"],
+      enum: ["Twitter", "Facebook", "Instagram", "LinkedIn", "TikTok", "YouTube", "Telegram", "WhatsApp"],
     },
     authorName: { type: String, required: true },
     authorId: String,
@@ -20,6 +20,14 @@ const commentSchema = new mongoose.Schema(
     engagement: {
       likes: { type: Number, default: 0 },
       replies: { type: Number, default: 0 },
+    },
+    parentCommentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Comment",
+    },
+    isRead: {
+      type: Boolean,
+      default: false,
     },
   },
   {

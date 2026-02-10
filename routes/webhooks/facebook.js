@@ -34,9 +34,18 @@ router.post("/facebook/webhook", async (req, res) => {
 
     if (object === "page") {
       for (const pageEntry of entry) {
+        // Process messages
         if (pageEntry.messaging) {
           for (const messagingEvent of pageEntry.messaging) {
             await processFacebookMessage(messagingEvent, pageEntry.id);
+          }
+        }
+        // Process comments
+        if (pageEntry.changes) {
+          for (const change of pageEntry.changes) {
+            if (change.field === "feed" && change.value.item === "comment") {
+              await processFacebookComment(change.value, pageEntry.id);
+            }
           }
         }
       }
@@ -143,10 +152,96 @@ function verifyFacebookSignature(body, signature) {
   return signature === `sha256=${expectedSignature}`;
 }
 
+// Process Facebook Comment
+async function processFacebookComment(commentData, pageId) {
+  try {
+    const commentId = commentData.comment_id;
+    const postId = commentData.post_id;
+    const commentMessage = commentData.message;
+    const from = commentData.from;
+    const createdTime = commentData.created_time;
+
+    if (!commentId || !commentMessage) {
+      return;
+    }
+
+    // Find the account associated with this page
+    const account = await Account.findOne({
+      platform: "Facebook",
+      pageId: pageId,
+    });
+
+    if (!account) {
+      console.log("No Facebook account found for page:", pageId);
+      return;
+    }
+
+    // Find the post
+    const Post = (await import("../../models/Post.js")).default;
+    const Comment = (await import("../../models/Comment.js")).default;
+
+    const post = await Post.findOne({
+      userId: account.userId,
+      platform: "Facebook",
+      platformPostId: postId,
+    });
+
+    if (!post) {
+      console.log("Post not found for comment:", postId);
+      return;
+    }
+
+    // Save the comment
+    const comment = await Comment.findOneAndUpdate(
+      { platformCommentId: commentId },
+      {
+        postId: post._id,
+        platformCommentId: commentId,
+        platform: "Facebook",
+        authorName: from?.name || "Unknown",
+        authorId: from?.id,
+        content: commentMessage,
+        createdAt: new Date(createdTime),
+        isRead: false,
+      },
+      { upsert: true, new: true }
+    );
+
+    // Save as message for auto-reply processing
+    const Message = (await import("../../models/Message.js")).default;
+    const messageDoc = await Message.findOneAndUpdate(
+      {
+        platformMessageId: commentId,
+        platform: "Facebook",
+        messageType: "comment",
+      },
+      {
+        userId: account.userId,
+        platform: "Facebook",
+        platformMessageId: commentId,
+        senderId: from?.id,
+        senderName: from?.name || "Unknown",
+        content: commentMessage,
+        messageType: "comment",
+        receivedAt: new Date(createdTime),
+        isRead: false,
+        isArchived: false,
+      },
+      { upsert: true, new: true }
+    );
+
+    // Trigger auto-reply processing
+    await triggerAutoReply(account.userId, messageDoc._id);
+  } catch (error) {
+    console.error("Error processing Facebook comment:", error);
+  }
+}
+
 // Trigger auto-reply for Facebook message
 async function triggerAutoReply(userId, messageId) {
   try {
-    const response = await fetch("http://localhost:5000/api/auto-reply/process", {
+    const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+    const response = await fetch(`${baseUrl}/api/auto-reply/process`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

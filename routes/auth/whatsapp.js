@@ -1,4 +1,5 @@
 import express from "express";
+import crypto from "crypto";
 import Account from "../../models/Account.js";
 import { authMiddleware } from "../../middleware/auth.js";
 
@@ -56,6 +57,13 @@ router.get("/whatsapp/webhook", async (req, res) => {
 // Handle WhatsApp webhook for incoming messages
 router.post("/whatsapp/webhook", async (req, res) => {
   try {
+    // Verify webhook signature for security
+    const signature = req.headers["x-hub-signature-256"];
+    if (signature && !verifyWhatsAppSignature(req.body, signature)) {
+      console.log("WhatsApp webhook signature verification failed");
+      return res.status(401).json({ error: "Invalid signature" });
+    }
+
     const body = req.body;
 
     // Check if it's a WhatsApp message
@@ -77,6 +85,25 @@ router.post("/whatsapp/webhook", async (req, res) => {
     res.status(500).json({ error: "Webhook processing failed" });
   }
 });
+
+// Verify WhatsApp webhook signature
+function verifyWhatsAppSignature(body, signature) {
+  // WhatsApp uses the same App Secret as Facebook (since it's part of Meta)
+  const appSecret = process.env.WHATSAPP_APP_SECRET || process.env.FACEBOOK_APP_SECRET;
+  
+  if (!signature || !appSecret) {
+    // If no secret configured, skip verification (not recommended for production)
+    console.warn("WhatsApp webhook signature verification skipped: No app secret configured");
+    return true;
+  }
+
+  const expectedSignature = crypto
+    .createHmac("sha256", appSecret)
+    .update(JSON.stringify(body))
+    .digest("hex");
+
+  return signature === `sha256=${expectedSignature}`;
+}
 
 // Process incoming WhatsApp message
 async function processWhatsAppMessage(message, metadata) {
@@ -168,8 +195,9 @@ async function processWhatsAppMessage(message, metadata) {
 // Trigger auto-reply for WhatsApp message
 async function triggerAutoReply(userId, messageId) {
   try {
+    const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
     const response = await fetch(
-      "https://www.sushiluha.com/api/auto-reply/process",
+      `${baseUrl}/api/auto-reply/process`,
       {
         method: "POST",
         headers: {

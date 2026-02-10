@@ -9,8 +9,8 @@ import { authMiddleware } from "../../middleware/auth.js";
 const router = express.Router();
 
 router.post("/post", authMiddleware, async (req, res) => {
-  const { content, platforms, imageUrl } = req.body;
-  console.log("Post request received:", { content, platforms, imageUrl });
+  const { content, platforms, imageUrl, videoUrl } = req.body;
+  console.log("Post request received:", { content, platforms, imageUrl, videoUrl });
 
   if (!content || !platforms || platforms.length === 0) {
     console.error("Post validation failed: Missing content or platforms");
@@ -239,25 +239,96 @@ router.post("/post", authMiddleware, async (req, res) => {
             tiktokAccount.accessToken = access_token;
           }
 
-          // For now, we'll create a mock post since TikTok video posting requires file upload
-          // In a real implementation, you would need to handle video file uploads
-          console.log("TikTok post created (mock for demo)");
+          // TikTok video posting
+          // Note: TikTok requires video for publishing. Use /api/tiktok/upload endpoint for video uploads
+          if (videoUrl) {
+            try {
+              console.log("Posting video to TikTok from URL...");
+              
+              // Step 1: Initialize video upload
+              const initResponse = await axios.post(
+                "https://open.tiktokapis.com/v2/post/publish/video/init/",
+                {
+                  post_info: {
+                    title: content || "Video Post",
+                    privacy_level: "PUBLIC_TO_EVERYONE",
+                    disable_duet: false,
+                    disable_comment: false,
+                    disable_stitch: false,
+                    video_cover_timestamp_ms: 1000,
+                  },
+                  source_info: {
+                    source: "FILE_UPLOAD",
+                  },
+                },
+                {
+                  headers: {
+                    Authorization: `Bearer ${tiktokAccount.accessToken}`,
+                    "Content-Type": "application/json",
+                  },
+                }
+              );
 
-          // Save to database
-          await Post.create({
-            userId: req.userId,
-            platform: "TikTok",
-            platformPostId: `tiktok-${Date.now()}`,
-            content: content,
-            imageUrl: imageUrl,
-            status: "published",
-          });
+              const { publish_id, upload_url } = initResponse.data.data;
 
-          results.TikTok = {
-            message: "TikTok post created (demo mode)",
-            postId: `tiktok-${Date.now()}`,
-            note: "Video posting requires file upload implementation",
-          };
+              // Step 2: Download and upload video file
+              const videoResponse = await axios.get(videoUrl, {
+                responseType: "stream",
+              });
+
+              await axios.put(upload_url, videoResponse.data, {
+                headers: {
+                  "Content-Type": "video/mp4",
+                },
+                maxContentLength: Infinity,
+                maxBodyLength: Infinity,
+              });
+
+              // Step 3: Check publish status (async, will be processed by TikTok)
+              const publishId = publish_id;
+
+              // Save to database with processing status
+              await Post.create({
+                userId: req.userId,
+                platform: "TikTok",
+                platformPostId: publishId,
+                content: content,
+                videoUrl: videoUrl,
+                status: "processing",
+              });
+
+              results.TikTok = {
+                message: "TikTok video upload initiated",
+                publishId: publishId,
+                note: "Video is being processed. Check status using /api/tiktok/upload-status/:publishId",
+              };
+            } catch (videoError) {
+              console.error("TikTok video posting error:", videoError.response?.data || videoError.message);
+              results.TikTok = {
+                error: `Video upload failed: ${videoError.response?.data?.error?.message || videoError.message}`,
+                note: "For better video upload support, use /api/tiktok/upload endpoint with file upload",
+              };
+            }
+          } else {
+            // Text-only post (TikTok doesn't support text-only posts)
+            console.log("TikTok text post - TikTok requires video for publishing");
+
+            // Save to database as draft
+            await Post.create({
+              userId: req.userId,
+              platform: "TikTok",
+              platformPostId: `tiktok-draft-${Date.now()}`,
+              content: content,
+              imageUrl: imageUrl,
+              status: "draft",
+            });
+
+            results.TikTok = {
+              message: "TikTok post saved as draft",
+              postId: `tiktok-draft-${Date.now()}`,
+              note: "TikTok requires video for publishing. Use /api/tiktok/upload endpoint to upload a video.",
+            };
+          }
         } catch (error) {
           console.error("TikTok posting error:", error.message);
           results.TikTok = { error: "Failed to post to TikTok" };

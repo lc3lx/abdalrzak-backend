@@ -6,8 +6,8 @@ import { authMiddleware } from "../../middleware/auth.js";
 const router = express.Router();
 
 router.post("/schedule-post", authMiddleware, async (req, res) => {
-  const { content, platforms, imageUrl, scheduledAt } = req.body;
-  console.log("Schedule post request received:", { content, platforms, imageUrl, scheduledAt });
+  const { content, platforms, imageUrl, videoUrl, scheduledAt } = req.body;
+  console.log("Schedule post request received:", { content, platforms, imageUrl, videoUrl, scheduledAt });
 
   if (!content || !platforms || platforms.length === 0 || !scheduledAt) {
     console.error("Schedule validation failed: Missing required fields");
@@ -19,6 +19,7 @@ router.post("/schedule-post", authMiddleware, async (req, res) => {
       userId: req.userId,
       content,
       imageUrl,
+      videoUrl,
       platforms,
       scheduledAt: new Date(scheduledAt),
     });
@@ -33,10 +34,13 @@ router.post("/schedule-post", authMiddleware, async (req, res) => {
           const updatedPost = await ScheduledPost.findById(scheduledPost._id);
           if (updatedPost.status !== "pending") return;
 
+          const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+          const token = req.headers.authorization?.split(" ")[1] || process.env.INTERNAL_API_TOKEN || "internal";
+          
           const postResponse = await axios.post(
-            "http://localhost:5000/api/post",
-            { content, platforms, imageUrl },
-            { headers: { Authorization: `Bearer ${req.headers.authorization.split(" ")[1]}` } }
+            `${baseUrl}/api/post`,
+            { content, platforms, imageUrl, videoUrl: updatedPost.videoUrl },
+            { headers: { Authorization: `Bearer ${token}` } }
           );
           updatedPost.status = "posted";
           await updatedPost.save();

@@ -8,7 +8,9 @@ const router = express.Router();
 router.get("/instagram/auth", authMiddleware, (req, res) => {
   try {
     console.log("Initiating Instagram auth...");
-    const redirectUri = "https://www.sushiluha.com/api/instagram/callback";
+    const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+    const redirectUri = `${baseUrl}/api/instagram/callback`;
+    // Using Instagram Graph API (Meta) - requires Facebook App
     const url = `https://api.instagram.com/oauth/authorize?client_id=${
       process.env.INSTAGRAM_CLIENT_ID
     }&redirect_uri=${encodeURIComponent(
@@ -30,10 +32,13 @@ router.get("/instagram/callback", async (req, res) => {
     console.error("Instagram callback failed: Session expired");
     return res.status(400).json({ error: "Session expired" });
   }
-  const redirectUri = "https://www.sushiluha.com/api/instagram/callback";
+  const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+  const redirectUri = `${baseUrl}/api/instagram/callback`;
 
   try {
     console.log("Processing Instagram callback...");
+    // Instagram Graph API (Meta) - using Facebook OAuth
+    // First get short-lived token from Instagram Basic Display API
     const { data } = await axios.post(
       "https://api.instagram.com/oauth/access_token",
       {
@@ -45,6 +50,7 @@ router.get("/instagram/callback", async (req, res) => {
       }
     );
     const accessToken = data.access_token;
+    // Get user info using Instagram Graph API
     const userResponse = await axios.get(
       `https://graph.instagram.com/me?fields=username&access_token=${accessToken}`
     );

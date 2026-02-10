@@ -10,7 +10,7 @@ const messageSchema = new mongoose.Schema(
     platform: {
       type: String,
       required: true,
-      enum: ["Twitter", "Facebook", "Instagram", "LinkedIn"],
+      enum: ["Twitter", "Facebook", "Instagram", "LinkedIn", "TikTok", "YouTube", "Telegram", "WhatsApp"],
     },
     platformMessageId: {
       type: String,

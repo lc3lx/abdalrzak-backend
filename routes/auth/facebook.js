@@ -8,12 +8,13 @@ const router = express.Router();
 router.get("/facebook/auth", authMiddleware, (req, res) => {
   try {
     console.log("Initiating Facebook auth...");
-    const redirectUri = "https://www.sushiluha.com/api/facebook/callback";
+    const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+    const redirectUri = `${baseUrl}/api/facebook/callback`;
     const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${
       process.env.FACEBOOK_APP_ID
     }&redirect_uri=${encodeURIComponent(
       redirectUri
-    )}&scope=pages_read_engagement,pages_manage_posts`;
+    )}&scope=pages_read_engagement,pages_manage_posts,pages_messaging`;
     req.session.userId = req.userId;
     console.log("Facebook auth URL generated:", url);
     res.json({ url });
@@ -30,7 +31,8 @@ router.get("/facebook/callback", async (req, res) => {
     console.error("Facebook callback failed: Session expired");
     return res.status(400).json({ error: "Session expired" });
   }
-  const redirectUri = "https://www.sushiluha.com/api/facebook/callback";
+  const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+  const redirectUri = `${baseUrl}/api/facebook/callback`;
   const tokenUrl = `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${
     process.env.FACEBOOK_APP_ID
   }&client_secret=${

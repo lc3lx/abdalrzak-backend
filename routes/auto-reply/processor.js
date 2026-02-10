@@ -12,15 +12,55 @@ const router = express.Router();
 // Process incoming message for auto replies
 router.post("/auto-reply/process", authMiddleware, async (req, res) => {
   try {
-    const { messageId } = req.body;
+    const { messageId, commentId } = req.body;
 
-    const message = await Message.findOne({
-      _id: messageId,
-      userId: req.userId,
-    });
+    // Support both messages and comments
+    let message;
+    if (messageId) {
+      message = await Message.findOne({
+        _id: messageId,
+        userId: req.userId,
+      });
+    } else if (commentId) {
+      // Convert comment to message format for processing
+      const Comment = (await import("../../models/Comment.js")).default;
+      const Post = (await import("../../models/Post.js")).default;
+      
+      const comment = await Comment.findById(commentId);
+      if (!comment) {
+        return res.status(404).json({ error: "Comment not found" });
+      }
+
+      const post = await Post.findById(comment.postId);
+      if (!post || post.userId.toString() !== req.userId.toString()) {
+        return res.status(404).json({ error: "Post not found" });
+      }
+
+      // Create message from comment
+      message = await Message.findOneAndUpdate(
+        {
+          platformMessageId: comment.platformCommentId,
+          platform: comment.platform,
+          messageType: "comment",
+        },
+        {
+          userId: req.userId,
+          platform: comment.platform,
+          platformMessageId: comment.platformCommentId,
+          senderId: comment.authorId,
+          senderName: comment.authorName,
+          content: comment.content,
+          messageType: "comment",
+          receivedAt: comment.createdAt,
+          isRead: false,
+          isArchived: false,
+        },
+        { upsert: true, new: true }
+      );
+    }
 
     if (!message) {
-      return res.status(404).json({ error: "Message not found" });
+      return res.status(404).json({ error: "Message or comment not found" });
     }
 
     // Find applicable auto reply flows

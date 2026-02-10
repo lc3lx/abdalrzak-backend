@@ -8,8 +8,9 @@ const router = express.Router();
 router.get("/tiktok/auth", authMiddleware, (req, res) => {
   try {
     console.log("Initiating TikTok auth...");
-    const redirectUri = "https://www.sushiluha.com/api/tiktok/callback";
-    const scope = "user.info.basic,video.publish";
+    const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+    const redirectUri = `${baseUrl}/api/tiktok/callback`;
+    const scope = "user.info.basic,video.publish,video.upload";
     const state = Math.random().toString(36).substring(7);
 
     // Store state in session for verification
@@ -44,7 +45,8 @@ router.get("/tiktok/callback", async (req, res) => {
     return res.status(400).json({ error: "Invalid state parameter" });
   }
 
-  const redirectUri = "https://www.sushiluha.com/api/tiktok/callback";
+  const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+  const redirectUri = `${baseUrl}/api/tiktok/callback`;
 
   try {
     console.log("Processing TikTok callback...");
@@ -149,6 +151,52 @@ router.post("/tiktok/refresh", authMiddleware, async (req, res) => {
   } catch (error) {
     console.error("TikTok refresh error:", error.message);
     res.status(500).json({ error: "Failed to refresh token" });
+  }
+});
+
+// Get TikTok account status
+router.get("/tiktok/status", authMiddleware, async (req, res) => {
+  try {
+    const account = await Account.findOne({
+      userId: req.userId,
+      platform: "TikTok",
+    });
+
+    if (!account) {
+      return res.json({ connected: false });
+    }
+
+    // Check if token is expired or about to expire (within 1 hour)
+    const isExpired = account.expiresAt && new Date() > account.expiresAt;
+    const expiresSoon = account.expiresAt && new Date(account.expiresAt.getTime() - 3600000) < new Date();
+
+    res.json({
+      connected: true,
+      displayName: account.displayName,
+      platformId: account.platformId,
+      connectedAt: account.updatedAt,
+      tokenExpired: isExpired,
+      tokenExpiresSoon: expiresSoon,
+      expiresAt: account.expiresAt,
+    });
+  } catch (error) {
+    console.error("TikTok status error:", error);
+    res.status(500).json({ error: "Failed to get TikTok status" });
+  }
+});
+
+// Disconnect TikTok account
+router.delete("/tiktok/disconnect", authMiddleware, async (req, res) => {
+  try {
+    await Account.findOneAndDelete({
+      userId: req.userId,
+      platform: "TikTok",
+    });
+
+    res.json({ success: true, message: "TikTok account disconnected" });
+  } catch (error) {
+    console.error("TikTok disconnect error:", error);
+    res.status(500).json({ error: "Failed to disconnect TikTok account" });
   }
 });
 
