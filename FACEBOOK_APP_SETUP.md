@@ -46,3 +46,23 @@
 إذا استمر الخطأ:
 - تأكد أنك تستخدم نفس تطبيق فيسبوك الذي فيه **معرّف التطبيق (App ID)** المستخدم في ملف `.env` (FACEBOOK_APP_ID).
 - جرّب إضافة النطاق بدون www فقط: `sushiluha.com` في **نطاقات التطبيق** مع الإبقاء على `www.sushiluha.com` أيضاً.
+
+---
+
+## عرض الإعجابات والتعليقات (خطأ #10 أو Missing Permissions)
+
+إذا ظهر عند «تحديث التفاعل» أن فيسبوك يطلب **pages_read_engagement** أو **Page Public Content Access**:
+
+### 1. إعادة ربط فيسبوك
+- من الموقع: **Integrations** → فك ربط فيسبوك ثم ربطه من جديد.
+- عند الربط تأكد من الموافقة على كل الصلاحيات (بما فيها الصفحات وقراءة التفاعل).
+
+### 2. إذا التطبيق في وضع «تطوير» (Development)
+- في [developers.facebook.com/apps](https://developers.facebook.com/apps) → تطبيقك → **أدوار التطبيق** (App Roles).
+- أضف نفسك (أو الحساب الذي يملك الصفحة) كـ **مسؤول** أو **مطوّر** أو **مختبر**.
+- ثم أعد ربط فيسبوك من الموقع.
+
+### 3. إذا التطبيق «منشور» (Live)
+- صلاحية **pages_read_engagement** قد تحتاج مراجعة من فيسبوك (App Review).
+- أو التقديم على ميزة **Page Public Content Access**:  
+  [App Review → Permissions and Features](https://developers.facebook.com/docs/apps/review) ثم ابحث عن "Page Public Content Access" وقدم الطلب مع توضيح أن التطبيق يعرض تفاعل منشورات الصفحة (إعجابات، تعليقات، مشاركات) لصاحب الصفحة فقط.

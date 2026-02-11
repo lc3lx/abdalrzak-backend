@@ -171,39 +171,84 @@ function parseFbComments(postData) {
   return 0;
 }
 
-// Sync Facebook engagement via Graph API (axios). Post/Photo/Video supported.
+// Sync Facebook engagement: use page's published_posts first (works with page token),
+// then fallback to per-post only if we have missing posts.
 async function syncFacebookEngagement(account, posts) {
   const token = account.accessToken;
+  const pageId = account.pageId;
   if (!token) {
     console.error("Facebook sync: no access token");
     return { success: false, error: "No Facebook access token", updated: 0, results: [] };
   }
+  if (!pageId) {
+    console.error("Facebook sync: no pageId");
+    return { success: false, error: "No Facebook page ID", updated: 0, results: [] };
+  }
 
-  console.log("[Facebook sync] Posts to sync:", posts.length, "pageId:", account.pageId);
+  console.log("[Facebook sync] Posts to sync:", posts.length, "pageId:", pageId);
   const results = [];
   const errors = [];
 
+  // 1) Fetch all page posts with engagement in one call (avoids per-post permission issues)
+  let feedMap = {};
+  try {
+    const fields = "id,likes.summary(true),comments.summary(true),shares";
+    const url = `${FB_GRAPH_BASE}/${pageId}/published_posts?fields=${encodeURIComponent(fields)}&limit=100&access_token=${encodeURIComponent(token)}`;
+    const { data } = await axios.get(url);
+    const list = data.data || [];
+    for (const item of list) {
+      feedMap[item.id] = item;
+    }
+    console.log("[Facebook sync] published_posts returned", list.length, "posts");
+  } catch (err) {
+    const fbErr = err.response?.data?.error || {};
+    console.error("[Facebook sync] published_posts failed:", fbErr.code, fbErr.message);
+    feedMap = {};
+  }
+
+  const postIds = new Set(posts.map((p) => p.platformPostId));
+
   for (const post of posts) {
     const nodeId = post.platformPostId;
-    try {
-      const fields = "likes.summary(true),comments.summary(true)";
-      const url = `${FB_GRAPH_BASE}/${nodeId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`;
-      const { data: postData } = await axios.get(url);
+    let likesCount = 0;
+    let commentsCount = 0;
+    let sharesCount = 0;
+    let ok = false;
 
-      const likesCount = parseFbLikes(postData);
-      const commentsCount = parseFbComments(postData);
-
-      let sharesCount = 0;
+    const fromFeed = feedMap[nodeId];
+    if (fromFeed) {
+      likesCount = parseFbLikes(fromFeed);
+      commentsCount = parseFbComments(fromFeed);
+      sharesCount = Number(fromFeed.shares?.count) || 0;
+      ok = true;
+    } else {
+      // 2) Fallback: request this post by id (may require Page Public Content Access)
       try {
-        const sharesUrl = `${FB_GRAPH_BASE}/${nodeId}?fields=shares&access_token=${encodeURIComponent(token)}`;
-        const { data: sharesData } = await axios.get(sharesUrl);
-        sharesCount = Number(sharesData.shares?.count) || 0;
-      } catch (e) {
-        if (e.response?.data?.error?.code !== 100) {
-          console.warn("[Facebook sync] shares", nodeId, e.response?.data?.error?.message || e.message);
+        const fields = "likes.summary(true),comments.summary(true)";
+        const url = `${FB_GRAPH_BASE}/${nodeId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`;
+        const { data: postData } = await axios.get(url);
+        likesCount = parseFbLikes(postData);
+        commentsCount = parseFbComments(postData);
+        try {
+          const sharesRes = await axios.get(
+            `${FB_GRAPH_BASE}/${nodeId}?fields=shares&access_token=${encodeURIComponent(token)}`
+          );
+          sharesCount = Number(sharesRes.data.shares?.count) || 0;
+        } catch (e) {
+          /* ignore */
         }
+        ok = true;
+      } catch (error) {
+        const fbErr = error.response?.data?.error || {};
+        const msg = fbErr.message || error.message;
+        const code = fbErr.code;
+        console.error("[Facebook sync] FAIL", nodeId, "code:", code, "message:", msg);
+        errors.push({ postId: nodeId, code, message: msg });
+        results.push({ postId: nodeId, error: msg, engagement: null });
       }
+    }
 
+    if (ok) {
       await Post.findByIdAndUpdate(post._id, {
         "engagement.likes": likesCount,
         "engagement.comments": commentsCount,
@@ -232,7 +277,7 @@ async function syncFacebookEngagement(account, posts) {
           );
         }
       } catch (e) {
-        console.warn("[Facebook sync] comments list", nodeId, e.response?.data?.error?.message || e.message);
+        /* optional */
       }
 
       results.push({
@@ -240,25 +285,21 @@ async function syncFacebookEngagement(account, posts) {
         engagement: { likes: likesCount, comments: commentsCount, shares: sharesCount },
       });
       console.log("[Facebook sync] OK", nodeId, "likes:", likesCount, "comments:", commentsCount, "shares:", sharesCount);
-    } catch (error) {
-      const fbErr = error.response?.data?.error || {};
-      const msg = fbErr.message || error.message;
-      const code = fbErr.code;
-      console.error("[Facebook sync] FAIL", nodeId, "code:", code, "message:", msg);
-      errors.push({ postId: nodeId, code, message: msg });
-      results.push({
-        postId: nodeId,
-        error: msg,
-        engagement: null,
-      });
     }
   }
+
+  const hasPermissionError = errors.some(
+    (e) => e.code === 10 || (e.code === 200 && /permission/i.test(e.message || ""))
+  );
 
   return {
     success: errors.length === 0,
     updated: results.filter((r) => r.engagement).length,
     results,
     errors: errors.length ? errors : undefined,
+    permissionHint: hasPermissionError
+      ? "Facebook requires 'pages_read_engagement' or Page Public Content Access. Reconnect Facebook from Integrations, or in App Dashboard: App Review / add test app roles."
+      : undefined,
   };
 }
 
