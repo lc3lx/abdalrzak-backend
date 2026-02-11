@@ -24,13 +24,42 @@ router.get("/facebook/auth", authMiddleware, (req, res) => {
   }
 });
 
+// صفحة HTML تظهر عند خطأ من فيسبوك (مثلاً نطاق غير مضاف)
+const errorHtml = (message, redirectUri) => `
+<!DOCTYPE html>
+<html dir="rtl">
+<head><meta charset="utf-8"><title>خطأ ربط فيسبوك</title></head>
+<body style="font-family: Arial; padding: 20px; text-align: center; max-width: 500px; margin: 40px auto;">
+  <h2>⚠️ إعداد تطبيق فيسبوك</h2>
+  <p>${message}</p>
+  <p><strong>أضف في تطبيق فيسبوك:</strong></p>
+  <ul style="text-align: right;">
+    <li>الإعدادات → أساسي → <strong>نطاقات التطبيق</strong>: أضف <code>www.sushiluha.com</code> و <code>sushiluha.com</code></li>
+    <li>Facebook Login → إعدادات → <strong>Valid OAuth Redirect URIs</strong>: أضف <code>https://www.sushiluha.com/api/facebook/callback</code></li>
+    <li>تأكد من وجود منصة <strong>Website</strong> وربطها بموقعك</li>
+  </ul>
+  <p><button onclick="window.close()">إغلاق</button></p>
+</body>
+</html>
+`;
+
 router.get("/facebook/callback", async (req, res) => {
-  const { code } = req.query;
+  const { code, error_code, error_message } = req.query;
   const { userId } = req.session;
-  if (!userId) {
-    console.error("Facebook callback failed: Session expired");
-    return res.status(400).json({ error: "Session expired" });
+
+  if (error_code) {
+    const msg = decodeURIComponent(error_message || "").replace(/\+/g, " ") || "حدث خطأ من فيسبوك.";
+    return res.send(errorHtml(msg, null));
   }
+
+  if (!userId) {
+    return res.send(errorHtml("انتهت الجلسة. أعد المحاولة بعد تسجيل الدخول.", null));
+  }
+
+  if (!code) {
+    return res.send(errorHtml("لم يُرجَع رمز من فيسبوك. تأكد من إعدادات النطاق وعناوين إعادة التوجيه.", null));
+  }
+
   const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
   const redirectUri = `${baseUrl}/api/facebook/callback`;
   const tokenUrl = `https://graph.facebook.com/v19.0/oauth/access_token?client_id=${
