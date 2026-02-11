@@ -15,7 +15,7 @@ router.get("/facebook/auth", authMiddleware, (req, res) => {
       process.env.FACEBOOK_APP_ID
     }&redirect_uri=${encodeURIComponent(
       redirectUri
-    )}&scope=pages_read_engagement,pages_manage_posts,pages_show_list,pages_messaging`;
+    )}&scope=pages_read_engagement,pages_manage_posts,pages_show_list,pages_read_user_content,pages_messaging`;
     req.session.userId = req.userId;
     res.json({ url, redirectUri });
   } catch (error) {

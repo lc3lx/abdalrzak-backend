@@ -155,37 +155,52 @@ async function syncTwitterEngagement(account, posts) {
 const FB_GRAPH_VERSION = "v19.0";
 const FB_GRAPH_BASE = `https://graph.facebook.com/${FB_GRAPH_VERSION}`;
 
+function parseFbLikes(postData) {
+  const likes = postData.likes;
+  if (!likes) return Number(postData.reactions?.summary?.total_count) || 0;
+  if (typeof likes.summary?.total_count === "number") return likes.summary.total_count;
+  if (Array.isArray(likes.data)) return likes.data.length;
+  return 0;
+}
+
+function parseFbComments(postData) {
+  const comments = postData.comments;
+  if (!comments) return 0;
+  if (typeof comments.summary?.total_count === "number") return comments.summary.total_count;
+  if (Array.isArray(comments.data)) return comments.data.length;
+  return 0;
+}
+
 // Sync Facebook engagement via Graph API (axios). Post/Photo/Video supported.
 async function syncFacebookEngagement(account, posts) {
   const token = account.accessToken;
   if (!token) {
     console.error("Facebook sync: no access token");
-    return { success: false, error: "No Facebook access token" };
+    return { success: false, error: "No Facebook access token", updated: 0, results: [] };
   }
 
+  console.log("[Facebook sync] Posts to sync:", posts.length, "pageId:", account.pageId);
   const results = [];
+  const errors = [];
 
   for (const post of posts) {
     const nodeId = post.platformPostId;
     try {
-      // 1) Engagement: likes + comments (works for Post, Photo, Video). No "shares" here (error on Photo/Video).
       const fields = "likes.summary(true),comments.summary(true)";
       const url = `${FB_GRAPH_BASE}/${nodeId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`;
       const { data: postData } = await axios.get(url);
 
-      const likesSummary = postData.likes?.summary ?? postData.reactions?.summary;
-      const likesCount = Number(likesSummary?.total_count) || 0;
-      const commentsCount = Number(postData.comments?.summary?.total_count) || 0;
+      const likesCount = parseFbLikes(postData);
+      const commentsCount = parseFbComments(postData);
 
-      // 2) Shares (Post only; skip for Photo/Video to avoid error 100)
       let sharesCount = 0;
       try {
         const sharesUrl = `${FB_GRAPH_BASE}/${nodeId}?fields=shares&access_token=${encodeURIComponent(token)}`;
         const { data: sharesData } = await axios.get(sharesUrl);
         sharesCount = Number(sharesData.shares?.count) || 0;
-      } catch (sharesErr) {
-        if (sharesErr.response?.data?.error?.code !== 100) {
-          console.warn("Facebook shares for", nodeId, sharesErr.response?.data?.error?.message || sharesErr.message);
+      } catch (e) {
+        if (e.response?.data?.error?.code !== 100) {
+          console.warn("[Facebook sync] shares", nodeId, e.response?.data?.error?.message || e.message);
         }
       }
 
@@ -196,7 +211,6 @@ async function syncFacebookEngagement(account, posts) {
         "engagement.lastUpdated": new Date(),
       });
 
-      // 3) Comments list (for display)
       try {
         const commentsUrl = `${FB_GRAPH_BASE}/${nodeId}/comments?fields=id,message,from,created_time,like_count&access_token=${encodeURIComponent(token)}`;
         const { data: commentsData } = await axios.get(commentsUrl);
@@ -217,31 +231,35 @@ async function syncFacebookEngagement(account, posts) {
             { upsert: true, new: true }
           );
         }
-      } catch (commentsErr) {
-        const fbErr = commentsErr.response?.data?.error;
-        console.warn(
-          "Facebook comments for",
-          nodeId,
-          fbErr?.message || commentsErr.message
-        );
+      } catch (e) {
+        console.warn("[Facebook sync] comments list", nodeId, e.response?.data?.error?.message || e.message);
       }
 
       results.push({
         postId: nodeId,
         engagement: { likes: likesCount, comments: commentsCount, shares: sharesCount },
       });
+      console.log("[Facebook sync] OK", nodeId, "likes:", likesCount, "comments:", commentsCount, "shares:", sharesCount);
     } catch (error) {
-      const fbErr = error.response?.data?.error;
-      console.error(
-        "Facebook engagement for",
-        nodeId,
-        ":",
-        fbErr ? `${fbErr.code} ${fbErr.message}` : error.message
-      );
+      const fbErr = error.response?.data?.error || {};
+      const msg = fbErr.message || error.message;
+      const code = fbErr.code;
+      console.error("[Facebook sync] FAIL", nodeId, "code:", code, "message:", msg);
+      errors.push({ postId: nodeId, code, message: msg });
+      results.push({
+        postId: nodeId,
+        error: msg,
+        engagement: null,
+      });
     }
   }
 
-  return { success: true, updated: results.length, results };
+  return {
+    success: errors.length === 0,
+    updated: results.filter((r) => r.engagement).length,
+    results,
+    errors: errors.length ? errors : undefined,
+  };
 }
 
 // Sync LinkedIn engagement data

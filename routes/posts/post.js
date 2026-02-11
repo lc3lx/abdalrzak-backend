@@ -178,18 +178,19 @@ router.post("/post", authMiddleware, async (req, res) => {
               (res) => (res.error ? reject(res.error) : resolve(res))
             );
           });
-          console.log("Facebook video posted:", response.id);
+          const videoPostId = response.post_id || response.id;
+          console.log("Facebook video posted:", videoPostId, "(post_id:", response.post_id, ")");
 
           await Post.create({
             userId: req.userId,
             platform: "Facebook",
-            platformPostId: response.id,
+            platformPostId: videoPostId,
             content: content,
             videoUrl: facebookVideoUrl,
             status: "published",
           });
 
-          results.Facebook = { message: "Video posted", postId: response.id };
+          results.Facebook = { message: "Video posted", postId: videoPostId };
         } catch (err) {
           console.error("Facebook (with video) error:", err.message);
           results.Facebook = { error: err.message || "Failed to post video to Facebook" };
@@ -219,18 +220,19 @@ router.post("/post", authMiddleware, async (req, res) => {
               (res) => (res.error ? reject(res.error) : resolve(res))
             );
           });
-          console.log("Facebook photo posted:", response.id);
+          const photoPostId = response.post_id || response.id;
+          console.log("Facebook photo posted:", photoPostId, "(post_id:", response.post_id, ")");
 
           await Post.create({
             userId: req.userId,
             platform: "Facebook",
-            platformPostId: response.id,
+            platformPostId: photoPostId,
             content: content,
             imageUrl: facebookImageUrl,
             status: "published",
           });
 
-          results.Facebook = { message: "Photo posted", postId: response.id };
+          results.Facebook = { message: "Photo posted", postId: photoPostId };
         } catch (err) {
           console.error("Facebook (with image) error:", err.message);
           results.Facebook = { error: err.message || "Failed to post to Facebook" };
