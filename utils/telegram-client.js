@@ -1,6 +1,6 @@
 import { TelegramClient } from "telegram";
-import { StringSession } from "telegram/sessions";
-import { Api } from "telegram/tl";
+import { StringSession } from "telegram/sessions/index.js";
+import { Api } from "telegram/tl/index.js";
 import input from "input"; // للإدخال التفاعلي
 import fs from "fs";
 import path from "path";
