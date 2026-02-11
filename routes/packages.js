@@ -204,7 +204,56 @@ router.get("/admin/all", adminAuthMiddleware, async (req, res) => {
 // Create new package
 router.post("/admin/create", adminAuthMiddleware, async (req, res) => {
   try {
-    const packageData = req.body;
+    let packageData = { ...req.body };
+
+    // تحويل الأرقام
+    if (packageData.price !== undefined) {
+      packageData.price = Number(packageData.price);
+    }
+    if (packageData.duration !== undefined) {
+      packageData.duration = parseInt(packageData.duration, 10) || 30;
+    }
+    if (packageData.sortOrder !== undefined) {
+      packageData.sortOrder = parseInt(packageData.sortOrder, 10) || 0;
+    }
+    if (packageData.maxAccounts !== undefined) {
+      packageData.maxAccounts = parseInt(packageData.maxAccounts, 10) || 1;
+    }
+    if (packageData.maxPostsPerDay !== undefined) {
+      packageData.maxPostsPerDay = parseInt(packageData.maxPostsPerDay, 10) || 10;
+    }
+    if (packageData.maxAutoReplies !== undefined) {
+      packageData.maxAutoReplies = parseInt(packageData.maxAutoReplies, 10) || 100;
+    }
+
+    // إذا وصف إنجليزي فاضي، استخدم الوصف العربي
+    if (!packageData.description && packageData.descriptionAr) {
+      packageData.description = packageData.descriptionAr;
+    }
+    if (!packageData.descriptionAr && packageData.description) {
+      packageData.descriptionAr = packageData.description;
+    }
+
+    // إزالة الميزات الفارغة (بدون اسم)
+    if (Array.isArray(packageData.features)) {
+      packageData.features = packageData.features.filter(
+        (f) => (f && (f.name || f.nameAr))
+      );
+      packageData.features = packageData.features.map((f) => ({
+        name: f.name || f.nameAr || "",
+        nameAr: f.nameAr || f.name || "",
+        description: f.description || "",
+        descriptionAr: f.descriptionAr || "",
+        included: f.included !== false,
+      }));
+    } else {
+      packageData.features = [];
+    }
+
+    // التأكد من أن الخدمات بصيغة صحيحة
+    if (!Array.isArray(packageData.services)) {
+      packageData.services = [];
+    }
 
     const newPackage = new Package(packageData);
     await newPackage.save();
@@ -215,6 +264,20 @@ router.post("/admin/create", adminAuthMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error("Error creating package:", error);
+
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((e) => e.message);
+      return res.status(400).json({
+        error: "بيانات الباقة غير صالحة",
+        details: messages.join("؛ "),
+      });
+    }
+    if (error.code === 11000) {
+      return res.status(400).json({
+        error: "اسم الباقة (الإنجليزي) مستخدم مسبقاً. اختر اسماً آخر.",
+      });
+    }
+
     res.status(500).json({ error: "خطأ في الخادم" });
   }
 });
@@ -223,7 +286,31 @@ router.post("/admin/create", adminAuthMiddleware, async (req, res) => {
 router.put("/admin/:packageId", adminAuthMiddleware, async (req, res) => {
   try {
     const { packageId } = req.params;
-    const updateData = req.body;
+    let updateData = { ...req.body };
+
+    if (updateData.price !== undefined) {
+      updateData.price = Number(updateData.price);
+    }
+    if (updateData.duration !== undefined) {
+      updateData.duration = parseInt(updateData.duration, 10);
+    }
+    if (!updateData.description && updateData.descriptionAr) {
+      updateData.description = updateData.descriptionAr;
+    }
+    if (!updateData.descriptionAr && updateData.description) {
+      updateData.descriptionAr = updateData.description;
+    }
+    if (Array.isArray(updateData.features)) {
+      updateData.features = updateData.features
+        .filter((f) => f && (f.name || f.nameAr))
+        .map((f) => ({
+          name: f.name || f.nameAr || "",
+          nameAr: f.nameAr || f.name || "",
+          description: f.description || "",
+          descriptionAr: f.descriptionAr || "",
+          included: f.included !== false,
+        }));
+    }
 
     const updatedPackage = await Package.findByIdAndUpdate(
       packageId,
@@ -241,6 +328,18 @@ router.put("/admin/:packageId", adminAuthMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating package:", error);
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((e) => e.message);
+      return res.status(400).json({
+        error: "بيانات الباقة غير صالحة",
+        details: messages.join("؛ "),
+      });
+    }
+    if (error.code === 11000) {
+      return res.status(400).json({
+        error: "اسم الباقة (الإنجليزي) مستخدم مسبقاً. اختر اسماً آخر.",
+      });
+    }
     res.status(500).json({ error: "خطأ في الخادم" });
   }
 });

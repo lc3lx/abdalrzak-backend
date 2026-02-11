@@ -17,7 +17,8 @@ export const adminAuthMiddleware = async (req, res, next) => {
       return res.status(404).json({ error: "المستخدم غير موجود" });
     }
 
-    if (user.role !== "admin") {
+    const isAdmin = user.role === "admin" || user.role === "admlin"; // admlin = typo fallback
+    if (!isAdmin) {
       return res.status(403).json({ error: "ليس لديك صلاحية للوصول لهذه الصفحة" });
     }
 
