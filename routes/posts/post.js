@@ -8,8 +8,22 @@ import { authMiddleware } from "../../middleware/auth.js";
 
 const router = express.Router();
 
+// Build full URL for relative paths (Facebook/Twitter/LinkedIn require absolute URLs)
+function toAbsoluteUrl(pathOrUrl, req) {
+  if (!pathOrUrl || typeof pathOrUrl !== "string") return pathOrUrl;
+  if (pathOrUrl.startsWith("http://") || pathOrUrl.startsWith("https://"))
+    return pathOrUrl;
+  const base =
+    process.env.BASE_URL ||
+    process.env.API_BASE_URL ||
+    `${req.protocol}://${req.get("host")}`;
+  return base.replace(/\/$/, "") + (pathOrUrl.startsWith("/") ? pathOrUrl : "/" + pathOrUrl);
+}
+
 router.post("/post", authMiddleware, async (req, res) => {
-  const { content, platforms, imageUrl, videoUrl } = req.body;
+  let { content, platforms, imageUrl, videoUrl } = req.body;
+  imageUrl = toAbsoluteUrl(imageUrl, req);
+  videoUrl = toAbsoluteUrl(videoUrl, req);
   console.log("Post request received:", { content, platforms, imageUrl, videoUrl });
 
   if (!content || !platforms || platforms.length === 0) {
