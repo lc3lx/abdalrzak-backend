@@ -22,8 +22,16 @@ router.get("/posts/published", authMiddleware, async (req, res) => {
           .sort({ createdAt: -1 })
           .limit(10); // Limit to 10 most recent comments
 
+        const po = post.toObject();
+        po.engagement = {
+          likes: po.engagement?.likes ?? 0,
+          comments: po.engagement?.comments ?? 0,
+          shares: po.engagement?.shares ?? 0,
+          retweets: po.engagement?.retweets ?? 0,
+          lastUpdated: po.engagement?.lastUpdated || po.publishedAt || new Date(),
+        };
         return {
-          ...post.toObject(),
+          ...po,
           comments,
         };
       })
