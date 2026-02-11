@@ -79,8 +79,14 @@ router.get("/instagram/callback", async (req, res) => {
     let accessToken = data.access_token;
 
     try {
-      const longLived = await axios.get(
-        `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(clientSecret)}&access_token=${encodeURIComponent(accessToken)}`
+      const longLived = await axios.post(
+        "https://graph.instagram.com/access_token",
+        new URLSearchParams({
+          grant_type: "ig_exchange_token",
+          client_secret: clientSecret,
+          access_token: accessToken,
+        }),
+        { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
       );
       if (longLived.data?.access_token) accessToken = longLived.data.access_token;
     } catch (e) {
