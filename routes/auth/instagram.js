@@ -7,17 +7,22 @@ const router = express.Router();
 
 router.get("/instagram/auth", authMiddleware, (req, res) => {
   try {
-    console.log("Initiating Instagram auth...");
+    const clientId = process.env.INSTAGRAM_CLIENT_ID || process.env.FACEBOOK_APP_ID;
+    const placeholder = /your-instagram-client-id|your-app-id|undefined/i;
+    if (!clientId || placeholder.test(String(clientId))) {
+      console.error("Instagram auth: INSTAGRAM_CLIENT_ID (or FACEBOOK_APP_ID) missing or placeholder in .env");
+      return res.status(500).json({
+        error: "Instagram غير مضبوط. أضف INSTAGRAM_CLIENT_ID و INSTAGRAM_CLIENT_SECRET في ملف .env (من تطبيق فيسبوك/إنستغرام).",
+      });
+    }
     const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
     const redirectUri = `${baseUrl}/api/instagram/callback`;
-    // Using Instagram Graph API (Meta) - requires Facebook App
-    const url = `https://api.instagram.com/oauth/authorize?client_id=${
-      process.env.INSTAGRAM_CLIENT_ID
-    }&redirect_uri=${encodeURIComponent(
+    const url = `https://api.instagram.com/oauth/authorize?client_id=${encodeURIComponent(
+      clientId
+    )}&redirect_uri=${encodeURIComponent(
       redirectUri
     )}&scope=user_profile,user_media,instagram_basic,instagram_content_publish&response_type=code`;
     req.session.userId = req.userId;
-    console.log("Instagram auth URL generated:", url);
     res.json({ url });
   } catch (error) {
     console.error("Instagram auth error:", error.message);
@@ -36,14 +41,16 @@ router.get("/instagram/callback", async (req, res) => {
   const redirectUri = `${baseUrl}/api/instagram/callback`;
 
   try {
-    console.log("Processing Instagram callback...");
-    // Instagram Graph API (Meta) - using Facebook OAuth
-    // First get short-lived token from Instagram Basic Display API
+    const clientId = process.env.INSTAGRAM_CLIENT_ID || process.env.FACEBOOK_APP_ID;
+    const clientSecret = process.env.INSTAGRAM_CLIENT_SECRET || process.env.FACEBOOK_APP_SECRET;
+    if (!clientId || !clientSecret) {
+      return res.status(500).json({ error: "Instagram: INSTAGRAM_CLIENT_ID / INSTAGRAM_CLIENT_SECRET (or FACEBOOK_APP_ID / FACEBOOK_APP_SECRET) missing in .env" });
+    }
     const { data } = await axios.post(
       "https://api.instagram.com/oauth/access_token",
       {
-        client_id: process.env.INSTAGRAM_CLIENT_ID,
-        client_secret: process.env.INSTAGRAM_CLIENT_SECRET,
+        client_id: clientId,
+        client_secret: clientSecret,
         grant_type: "authorization_code",
         redirect_uri: redirectUri,
         code,
