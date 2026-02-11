@@ -16,12 +16,11 @@
   ```
 - احفظ
 
-### 3. ربط إنستغرام (نفس تطبيق فيسبوك)
-- إنستغرام يستخدم تطبيق فيسبوك/ميتا. في ملف `.env` يمكنك استخدام نفس المعرّف والسر:
-  - `INSTAGRAM_CLIENT_ID` = نفس قيمة **معرّف التطبيق** (App ID) من فيسبوك
-  - `INSTAGRAM_CLIENT_SECRET` = نفس قيمة **سر التطبيق** (App Secret) من فيسبوك
-- أو أنشئ تطبيق إنستغرام من [developers.facebook.com](https://developers.facebook.com) → إنستغرام → إنستغرام Basic Display وخذ المعرّف والسر من هناك.
-- **مهم:** لا تترك القيمة `your-instagram-client-id` في `.env` وإلا رابط الربط سيكون معطلاً.
+### 3. ربط إنستغرام (تطبيق فيه منتج إنستغرام)
+- إنستغرام يطلب تطبيق ميتا فيه **منتج إنستغرام** (Instagram API with Instagram Login). إن لم يكن مضافاً تظهر رسالة **Invalid platform app**.
+- في تطبيقك: **Add Product** → **Instagram** → إعداد "Instagram API with Instagram Login"، ثم في الإعدادات أضف **Valid OAuth Redirect URIs**: `https://www.sushiluha.com/api/instagram/callback`
+- في `.env`: `INSTAGRAM_CLIENT_ID` و `INSTAGRAM_CLIENT_SECRET` = نفس **App ID** و **App Secret** من تطبيقك (من Settings → Basic).
+- تفاصيل كاملة: انظر الملف **INSTAGRAM_SETUP.md** في مجلد الباكند.
 
 ### 4. نطاقات التطبيق (App Domains)
 - في نفس الصفحة **الإعدادات → أساسي**

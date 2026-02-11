@@ -15,8 +15,9 @@ router.get("/instagram/auth", authMiddleware, (req, res) => {
         error: "Instagram غير مضبوط. أضف INSTAGRAM_CLIENT_ID و INSTAGRAM_CLIENT_SECRET في ملف .env (من تطبيق فيسبوك/إنستغرام).",
       });
     }
-    const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+    const baseUrl = (process.env.BASE_URL || "https://www.sushiluha.com").replace(/\/$/, "");
     const redirectUri = `${baseUrl}/api/instagram/callback`;
+    console.log("[Instagram auth] Use this EXACT URL in Meta App → Redirect URIs:", redirectUri);
     // Instagram Platform: instagram_business_basic required; instagram_business_content_publish for posting
     const scope = "instagram_business_basic,instagram_business_content_publish";
     const state = req.userId?.toString() || "";
@@ -34,53 +35,68 @@ router.get("/instagram/auth", authMiddleware, (req, res) => {
 });
 
 router.get("/instagram/callback", async (req, res) => {
-  const { code } = req.query;
-  const { userId } = req.session;
+  const code = (req.query.code || "").toString().trim();
+  const state = (req.query.state || "").toString().trim();
+  let userId = req.session?.userId;
+  if (!userId && state) userId = state;
   if (!userId) {
-    console.error("Instagram callback failed: Session expired");
-    return res.status(400).json({ error: "Session expired" });
+    console.error("Instagram callback: no userId (session expired or state missing)");
+    return res.status(400).send(`<html><body dir="rtl"><p>انتهت الجلسة. أعد المحاولة بعد تسجيل الدخول.</p><script>window.close();</script></body></html>`);
   }
-  const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
+
+  const baseUrl = (process.env.BASE_URL || "https://www.sushiluha.com").replace(/\/$/, "");
   const redirectUri = `${baseUrl}/api/instagram/callback`;
 
+  const clientId = process.env.INSTAGRAM_CLIENT_ID || process.env.FACEBOOK_APP_ID;
+  const clientSecret = process.env.INSTAGRAM_CLIENT_SECRET || process.env.FACEBOOK_APP_SECRET;
+  if (!clientId || !clientSecret) {
+    return res.status(500).send(`<html><body dir="rtl"><p>Instagram: أضف INSTAGRAM_CLIENT_ID و INSTAGRAM_CLIENT_SECRET في .env</p><script>window.close();</script></body></html>`);
+  }
+
+  if (!code) {
+    const errDesc = req.query.error_description || req.query.error || "No code returned";
+    console.error("Instagram callback: no code:", req.query);
+    return res.status(400).send(`<html><body dir="rtl"><p>لم يُرجَع رمز من إنستغرام: ${errDesc}</p><script>window.close();</script></body></html>`);
+  }
+
   try {
-    const clientId = process.env.INSTAGRAM_CLIENT_ID || process.env.FACEBOOK_APP_ID;
-    const clientSecret = process.env.INSTAGRAM_CLIENT_SECRET || process.env.FACEBOOK_APP_SECRET;
-    if (!clientId || !clientSecret) {
-      return res.status(500).json({ error: "Instagram: INSTAGRAM_CLIENT_ID / INSTAGRAM_CLIENT_SECRET (or FACEBOOK_APP_ID / FACEBOOK_APP_SECRET) missing in .env" });
-    }
-    const { data } = await axios.post(
+    const tokenRes = await axios.post(
       "https://api.instagram.com/oauth/access_token",
-      {
+      new URLSearchParams({
         client_id: clientId,
         client_secret: clientSecret,
         grant_type: "authorization_code",
         redirect_uri: redirectUri,
         code,
-      }
+      }),
+      { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
     );
+    const data = tokenRes.data;
+    if (!data.access_token) {
+      console.error("Instagram token response:", data);
+      return res.status(500).send(`<html><body dir="rtl"><p>إنستغرام لم يرجّع رمز وصول. راجع لوج السيرفر.</p><script>window.close();</script></body></html>`);
+    }
     let accessToken = data.access_token;
-    // Exchange short-lived (1h) for long-lived (60 days) token
+
     try {
       const longLived = await axios.get(
         `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(clientSecret)}&access_token=${encodeURIComponent(accessToken)}`
       );
       if (longLived.data?.access_token) accessToken = longLived.data.access_token;
     } catch (e) {
-      console.warn("Instagram long-lived token exchange failed, using short-lived:", e.message);
+      console.warn("Instagram long-lived token exchange failed:", e.response?.data || e.message);
     }
+
     const userResponse = await axios.get(
       `https://graph.instagram.com/me?fields=username&access_token=${encodeURIComponent(accessToken)}`
     );
     await Account.findOneAndUpdate(
       { userId, platform: "Instagram" },
-      { accessToken, displayName: userResponse.data.username },
+      { accessToken, displayName: userResponse.data?.username || "Instagram" },
       { upsert: true, new: true }
     );
-    console.log(
-      "Instagram auth completed, connected as:",
-      userResponse.data.username
-    );
+    console.log("Instagram auth completed, user:", userResponse.data?.username);
+
     res.send(`
       <script>
         window.opener.postMessage({ type: "AUTH_COMPLETE" }, "*");
@@ -88,8 +104,13 @@ router.get("/instagram/callback", async (req, res) => {
       </script>
     `);
   } catch (error) {
-    console.error("Instagram callback error:", error.message);
-    res.status(500).json({ error: "Failed to complete Instagram auth" });
+    const instaErr = error.response?.data;
+    const msg = instaErr?.error_message || instaErr?.message || error.message;
+    const codeErr = instaErr?.code;
+    console.error("Instagram callback error:", codeErr, msg, instaErr);
+    res.status(500).send(
+      `<html><body dir="rtl"><p><strong>خطأ من إنستغرام:</strong><br>${msg || "Failed to complete Instagram auth"}</p><p>إن استمر الخطأ: تأكد من أن redirect_uri في تطبيق ميتا = ${redirectUri}</p><script>window.close();</script></body></html>`
+    );
   }
 });
 
