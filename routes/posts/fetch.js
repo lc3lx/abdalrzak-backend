@@ -1,7 +1,6 @@
 import express from "express";
 import axios from "axios";
 import { TwitterApi } from "twitter-api-v2";
-import FB from "fb";
 import Account from "../../models/Account.js";
 import Post from "../../models/Post.js";
 import Comment from "../../models/Comment.js";
@@ -153,107 +152,96 @@ async function syncTwitterEngagement(account, posts) {
   }
 }
 
-// Sync Facebook engagement data
-// Note: Post supports likes, comments, shares. Photo/Video support likes, comments only (no "shares" field).
+const FB_GRAPH_VERSION = "v19.0";
+const FB_GRAPH_BASE = `https://graph.facebook.com/${FB_GRAPH_VERSION}`;
+
+// Sync Facebook engagement via Graph API (axios). Post/Photo/Video supported.
 async function syncFacebookEngagement(account, posts) {
-  try {
-    FB.setAccessToken(account.accessToken);
-    const results = [];
+  const token = account.accessToken;
+  if (!token) {
+    console.error("Facebook sync: no access token");
+    return { success: false, error: "No Facebook access token" };
+  }
 
-    for (const post of posts) {
+  const results = [];
+
+  for (const post of posts) {
+    const nodeId = post.platformPostId;
+    try {
+      // 1) Engagement: likes + comments (works for Post, Photo, Video). No "shares" here (error on Photo/Video).
+      const fields = "likes.summary(true),comments.summary(true)";
+      const url = `${FB_GRAPH_BASE}/${nodeId}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(token)}`;
+      const { data: postData } = await axios.get(url);
+
+      const likesSummary = postData.likes?.summary ?? postData.reactions?.summary;
+      const likesCount = Number(likesSummary?.total_count) || 0;
+      const commentsCount = Number(postData.comments?.summary?.total_count) || 0;
+
+      // 2) Shares (Post only; skip for Photo/Video to avoid error 100)
+      let sharesCount = 0;
       try {
-        // 1) Get likes + comments (works for Post, Photo, Video). Do NOT request "shares" here -
-        //    it causes error 100 on Photo/Video nodes.
-        const postData = await new Promise((resolve, reject) => {
-          FB.api(
-            `/${post.platformPostId}`,
+        const sharesUrl = `${FB_GRAPH_BASE}/${nodeId}?fields=shares&access_token=${encodeURIComponent(token)}`;
+        const { data: sharesData } = await axios.get(sharesUrl);
+        sharesCount = Number(sharesData.shares?.count) || 0;
+      } catch (sharesErr) {
+        if (sharesErr.response?.data?.error?.code !== 100) {
+          console.warn("Facebook shares for", nodeId, sharesErr.response?.data?.error?.message || sharesErr.message);
+        }
+      }
+
+      await Post.findByIdAndUpdate(post._id, {
+        "engagement.likes": likesCount,
+        "engagement.comments": commentsCount,
+        "engagement.shares": sharesCount,
+        "engagement.lastUpdated": new Date(),
+      });
+
+      // 3) Comments list (for display)
+      try {
+        const commentsUrl = `${FB_GRAPH_BASE}/${nodeId}/comments?fields=id,message,from,created_time,like_count&access_token=${encodeURIComponent(token)}`;
+        const { data: commentsData } = await axios.get(commentsUrl);
+        const list = commentsData.data || [];
+        for (const comment of list) {
+          await Comment.findOneAndUpdate(
+            { platformCommentId: comment.id },
             {
-              fields: "likes.summary(true),comments.summary(true)",
+              postId: post._id,
+              platformCommentId: comment.id,
+              platform: "Facebook",
+              authorName: comment.from?.name || "Unknown",
+              authorId: comment.from?.id,
+              content: comment.message,
+              createdAt: new Date(comment.created_time),
+              "engagement.likes": comment.like_count || 0,
             },
-            (res) => (res.error ? reject(res.error) : resolve(res))
-          );
-        });
-
-        const likesCount =
-          Number(postData.likes?.summary?.total_count) ||
-          Number(postData.reactions?.summary?.total_count) ||
-          0;
-        const commentsCount = postData.comments?.summary?.total_count ?? 0;
-
-        // 2) Get shares only for Post (optional; fails for Photo/Video)
-        let sharesCount = 0;
-        try {
-          const sharesData = await new Promise((resolve, reject) => {
-            FB.api(
-              `/${post.platformPostId}`,
-              { fields: "shares" },
-              (res) => (res.error ? reject(res.error) : resolve(res))
-            );
-          });
-          sharesCount = sharesData.shares?.count ?? 0;
-        } catch (sharesErr) {
-          // Expected for Photo/Video; use 0
-        }
-
-        await Post.findByIdAndUpdate(post._id, {
-          "engagement.likes": likesCount,
-          "engagement.comments": commentsCount,
-          "engagement.shares": sharesCount,
-          "engagement.lastUpdated": new Date(),
-        });
-
-        // 3) Fetch comments list
-        try {
-          const commentsData = await new Promise((resolve, reject) => {
-            FB.api(
-              `/${post.platformPostId}/comments`,
-              {
-                fields: "id,message,from,created_time,like_count",
-              },
-              (res) => (res.error ? reject(res.error) : resolve(res))
-            );
-          });
-
-          for (const comment of commentsData.data || []) {
-            await Comment.findOneAndUpdate(
-              { platformCommentId: comment.id },
-              {
-                postId: post._id,
-                platformCommentId: comment.id,
-                platform: "Facebook",
-                authorName: comment.from?.name || "Unknown",
-                authorId: comment.from?.id,
-                content: comment.message,
-                createdAt: new Date(comment.created_time),
-                "engagement.likes": comment.like_count || 0,
-              },
-              { upsert: true, new: true }
-            );
-          }
-        } catch (commentsErr) {
-          console.warn(
-            `Facebook comments for ${post.platformPostId}:`,
-            commentsErr.message
+            { upsert: true, new: true }
           );
         }
-
-        results.push({
-          postId: post.platformPostId,
-          engagement: { likes: likesCount, comments: commentsCount, shares: sharesCount },
-        });
-      } catch (error) {
-        console.error(
-          `Error fetching Facebook data for post ${post.platformPostId}:`,
-          error.message || error
+      } catch (commentsErr) {
+        const fbErr = commentsErr.response?.data?.error;
+        console.warn(
+          "Facebook comments for",
+          nodeId,
+          fbErr?.message || commentsErr.message
         );
       }
-    }
 
-    return { success: true, updated: results.length, results };
-  } catch (error) {
-    console.error("Facebook sync error:", error);
-    return { success: false, error: error.message };
+      results.push({
+        postId: nodeId,
+        engagement: { likes: likesCount, comments: commentsCount, shares: sharesCount },
+      });
+    } catch (error) {
+      const fbErr = error.response?.data?.error;
+      console.error(
+        "Facebook engagement for",
+        nodeId,
+        ":",
+        fbErr ? `${fbErr.code} ${fbErr.message}` : error.message
+      );
+    }
   }
+
+  return { success: true, updated: results.length, results };
 }
 
 // Sync LinkedIn engagement data
