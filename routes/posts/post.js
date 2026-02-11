@@ -36,41 +36,57 @@ router.post("/post", authMiddleware, async (req, res) => {
         console.warn("Twitter not connected for userId:", req.userId);
         results.Twitter = { error: "Twitter not connected" };
       } else {
-        console.log("Posting to Twitter with image...");
-        const twitterClient = new TwitterApi({
-          appKey: process.env.TWITTER_API_KEY,
-          appSecret: process.env.TWITTER_API_SECRET,
-          accessToken: twitterAccount.accessToken,
-          accessSecret: twitterAccount.accessSecret,
-        }).readWrite;
+        try {
+          console.log("Posting to Twitter with image...");
+          if (!process.env.TWITTER_API_KEY || !process.env.TWITTER_API_SECRET) {
+            throw new Error("Twitter API is not configured on server (missing TWITTER_API_KEY or TWITTER_API_SECRET)");
+          }
+          const isFetchableUrl = imageUrl && (imageUrl.startsWith("http://") || imageUrl.startsWith("https://"));
+          if (!isFetchableUrl) {
+            throw new Error("Image URL must be a full http(s) URL the server can fetch (e.g. after upload). Got: " + (imageUrl ? imageUrl.slice(0, 50) + "..." : "empty"));
+          }
+          const twitterClient = new TwitterApi({
+            appKey: process.env.TWITTER_API_KEY,
+            appSecret: process.env.TWITTER_API_SECRET,
+            accessToken: twitterAccount.accessToken,
+            accessSecret: twitterAccount.accessSecret,
+          }).readWrite;
 
-        const imageResponse = await axios.get(imageUrl, {
-          responseType: "arraybuffer",
-        });
-        const mediaId = await twitterClient.v1.uploadMedia(
-          Buffer.from(imageResponse.data),
-          { mimeType: "image/jpeg" }
-        );
-        const response = await twitterClient.v2.tweet({
-          text: content,
-          media: { media_ids: [mediaId] },
-        });
-        console.log("Tweet with image posted:", response.data.id);
+          const imageResponse = await axios.get(imageUrl, {
+            responseType: "arraybuffer",
+            timeout: 15000,
+            validateStatus: () => true,
+          });
+          if (imageResponse.status !== 200) {
+            throw new Error("Failed to fetch image: " + (imageResponse.statusText || imageResponse.status));
+          }
+          const mediaId = await twitterClient.v1.uploadMedia(
+            Buffer.from(imageResponse.data),
+            { mimeType: "image/jpeg" }
+          );
+          const response = await twitterClient.v2.tweet({
+            text: content,
+            media: { media_ids: [mediaId] },
+          });
+          console.log("Tweet with image posted:", response.data.id);
 
-        // Save to database
-        await Post.create({
-          userId: req.userId,
-          platform: "Twitter",
-          platformPostId: response.data.id,
-          content: content,
-          imageUrl: imageUrl,
-          status: "published",
-        });
+          await Post.create({
+            userId: req.userId,
+            platform: "Twitter",
+            platformPostId: response.data.id,
+            content: content,
+            imageUrl: imageUrl,
+            status: "published",
+          });
 
-        results.Twitter = {
-          message: "Tweet posted",
-          tweetId: response.data.id,
-        };
+          results.Twitter = {
+            message: "Tweet posted",
+            tweetId: response.data.id,
+          };
+        } catch (err) {
+          console.error("Twitter (with image) error:", err.message);
+          results.Twitter = { error: err.message || "Failed to post to Twitter" };
+        }
       }
     } else if (platforms.includes("Twitter")) {
       const twitterAccount = accounts.find((acc) => acc.platform === "Twitter");
@@ -78,29 +94,36 @@ router.post("/post", authMiddleware, async (req, res) => {
         console.warn("Twitter not connected for userId:", req.userId);
         results.Twitter = { error: "Twitter not connected" };
       } else {
-        console.log("Posting to Twitter (text only)...");
-        const twitterClient = new TwitterApi({
-          appKey: process.env.TWITTER_API_KEY,
-          appSecret: process.env.TWITTER_API_SECRET,
-          accessToken: twitterAccount.accessToken,
-          accessSecret: twitterAccount.accessSecret,
-        }).readWrite;
-        const response = await twitterClient.v2.tweet(content);
-        console.log("Tweet posted:", response.data.id);
+        try {
+          console.log("Posting to Twitter (text only)...");
+          if (!process.env.TWITTER_API_KEY || !process.env.TWITTER_API_SECRET) {
+            throw new Error("Twitter API is not configured on server");
+          }
+          const twitterClient = new TwitterApi({
+            appKey: process.env.TWITTER_API_KEY,
+            appSecret: process.env.TWITTER_API_SECRET,
+            accessToken: twitterAccount.accessToken,
+            accessSecret: twitterAccount.accessSecret,
+          }).readWrite;
+          const response = await twitterClient.v2.tweet(content);
+          console.log("Tweet posted:", response.data.id);
 
-        // Save to database
-        await Post.create({
-          userId: req.userId,
-          platform: "Twitter",
-          platformPostId: response.data.id,
-          content: content,
-          status: "published",
-        });
+          await Post.create({
+            userId: req.userId,
+            platform: "Twitter",
+            platformPostId: response.data.id,
+            content: content,
+            status: "published",
+          });
 
-        results.Twitter = {
-          message: "Tweet posted",
-          tweetId: response.data.id,
-        };
+          results.Twitter = {
+            message: "Tweet posted",
+            tweetId: response.data.id,
+          };
+        } catch (err) {
+          console.error("Twitter (text) error:", err.message);
+          results.Twitter = { error: err.message || "Failed to post to Twitter" };
+        }
       }
     }
 
@@ -117,29 +140,33 @@ router.post("/post", authMiddleware, async (req, res) => {
           error: "Facebook not connected or page ID missing",
         };
       } else {
-        console.log("Posting to Facebook with image...");
-        FB.setAccessToken(facebookAccount.accessToken);
-        const response = await new Promise((resolve, reject) => {
-          FB.api(
-            `/${facebookAccount.pageId}/photos`,
-            "POST",
-            { url: imageUrl, caption: content },
-            (res) => (res.error ? reject(res.error) : resolve(res))
-          );
-        });
-        console.log("Facebook photo posted:", response.id);
+        try {
+          console.log("Posting to Facebook with image...");
+          FB.setAccessToken(facebookAccount.accessToken);
+          const response = await new Promise((resolve, reject) => {
+            FB.api(
+              `/${facebookAccount.pageId}/photos`,
+              "POST",
+              { url: imageUrl, caption: content },
+              (res) => (res.error ? reject(res.error) : resolve(res))
+            );
+          });
+          console.log("Facebook photo posted:", response.id);
 
-        // Save to database
-        await Post.create({
-          userId: req.userId,
-          platform: "Facebook",
-          platformPostId: response.id,
-          content: content,
-          imageUrl: imageUrl,
-          status: "published",
-        });
+          await Post.create({
+            userId: req.userId,
+            platform: "Facebook",
+            platformPostId: response.id,
+            content: content,
+            imageUrl: imageUrl,
+            status: "published",
+          });
 
-        results.Facebook = { message: "Photo posted", postId: response.id };
+          results.Facebook = { message: "Photo posted", postId: response.id };
+        } catch (err) {
+          console.error("Facebook (with image) error:", err.message);
+          results.Facebook = { error: err.message || "Failed to post to Facebook" };
+        }
       }
     } else if (platforms.includes("Facebook")) {
       const facebookAccount = accounts.find(
@@ -154,28 +181,32 @@ router.post("/post", authMiddleware, async (req, res) => {
           error: "Facebook not connected or page ID missing",
         };
       } else {
-        console.log("Posting to Facebook (text only)...");
-        FB.setAccessToken(facebookAccount.accessToken);
-        const response = await new Promise((resolve, reject) => {
-          FB.api(
-            `/${facebookAccount.pageId}/feed`,
-            "POST",
-            { message: content },
-            (res) => (res.error ? reject(res.error) : resolve(res))
-          );
-        });
-        console.log("Facebook post created:", response.id);
+        try {
+          console.log("Posting to Facebook (text only)...");
+          FB.setAccessToken(facebookAccount.accessToken);
+          const response = await new Promise((resolve, reject) => {
+            FB.api(
+              `/${facebookAccount.pageId}/feed`,
+              "POST",
+              { message: content },
+              (res) => (res.error ? reject(res.error) : resolve(res))
+            );
+          });
+          console.log("Facebook post created:", response.id);
 
-        // Save to database
-        await Post.create({
-          userId: req.userId,
-          platform: "Facebook",
-          platformPostId: response.id,
-          content: content,
-          status: "published",
-        });
+          await Post.create({
+            userId: req.userId,
+            platform: "Facebook",
+            platformPostId: response.id,
+            content: content,
+            status: "published",
+          });
 
-        results.Facebook = { message: "Post created", postId: response.id };
+          results.Facebook = { message: "Post created", postId: response.id };
+        } catch (err) {
+          console.error("Facebook (text) error:", err.message);
+          results.Facebook = { error: err.message || "Failed to post to Facebook" };
+        }
       }
     }
 
@@ -344,15 +375,16 @@ router.post("/post", authMiddleware, async (req, res) => {
         console.warn("LinkedIn not connected for userId:", req.userId);
         results.LinkedIn = { error: "LinkedIn not connected" };
       } else {
-        const accessToken = linkedinAccount.accessToken;
-        const personUrn =
-          linkedinAccount.displayName === "LinkedIn User"
-            ? "urn:li:person:your-linkedin-id"
-            : linkedinAccount.displayName;
+        try {
+          const accessToken = linkedinAccount.accessToken;
+          const personUrn =
+            linkedinAccount.displayName === "LinkedIn User"
+              ? "urn:li:person:your-linkedin-id"
+              : linkedinAccount.displayName;
 
-        if (imageUrl) {
-          console.log("Posting to LinkedIn with image...");
-          const initResponse = await axios.post(
+          if (imageUrl) {
+            console.log("Posting to LinkedIn with image...");
+            const initResponse = await axios.post(
             "https://api.linkedin.com/v2/assets?action=registerUpload",
             {
               registerUploadRequest: {
@@ -481,6 +513,10 @@ router.post("/post", authMiddleware, async (req, res) => {
             postId: postResponse.data.id,
           };
         }
+        } catch (err) {
+          console.error("LinkedIn error:", err.message);
+          results.LinkedIn = { error: err.message || "Failed to post to LinkedIn" };
+        }
       }
     }
 
@@ -596,9 +632,17 @@ router.post("/post", authMiddleware, async (req, res) => {
   } catch (error) {
     console.error(
       "General posting error:",
-      error.response?.data || error.message
+      error.response?.data || error.message,
+      error.stack
     );
-    res.status(500).json({ error: "Failed to post" });
+    res.status(500).json({
+      error: "Failed to post",
+      message: error.message || "Unknown error",
+      ...(process.env.NODE_ENV !== "production" && {
+        details: error.response?.data,
+        stack: error.stack,
+      }),
+    });
   }
 });
 
