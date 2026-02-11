@@ -17,11 +17,14 @@ router.get("/instagram/auth", authMiddleware, (req, res) => {
     }
     const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
     const redirectUri = `${baseUrl}/api/instagram/callback`;
+    // Instagram Platform: instagram_business_basic required; instagram_business_content_publish for posting
+    const scope = "instagram_business_basic,instagram_business_content_publish";
+    const state = req.userId?.toString() || "";
     const url = `https://api.instagram.com/oauth/authorize?client_id=${encodeURIComponent(
       clientId
     )}&redirect_uri=${encodeURIComponent(
       redirectUri
-    )}&scope=user_profile,user_media,instagram_basic,instagram_content_publish&response_type=code`;
+    )}&scope=${encodeURIComponent(scope)}&response_type=code&state=${encodeURIComponent(state)}`;
     req.session.userId = req.userId;
     res.json({ url });
   } catch (error) {
@@ -56,10 +59,18 @@ router.get("/instagram/callback", async (req, res) => {
         code,
       }
     );
-    const accessToken = data.access_token;
-    // Get user info using Instagram Graph API
+    let accessToken = data.access_token;
+    // Exchange short-lived (1h) for long-lived (60 days) token
+    try {
+      const longLived = await axios.get(
+        `https://graph.instagram.com/access_token?grant_type=ig_exchange_token&client_secret=${encodeURIComponent(clientSecret)}&access_token=${encodeURIComponent(accessToken)}`
+      );
+      if (longLived.data?.access_token) accessToken = longLived.data.access_token;
+    } catch (e) {
+      console.warn("Instagram long-lived token exchange failed, using short-lived:", e.message);
+    }
     const userResponse = await axios.get(
-      `https://graph.instagram.com/me?fields=username&access_token=${accessToken}`
+      `https://graph.instagram.com/me?fields=username&access_token=${encodeURIComponent(accessToken)}`
     );
     await Account.findOneAndUpdate(
       { userId, platform: "Instagram" },
