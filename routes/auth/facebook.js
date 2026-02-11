@@ -7,17 +7,17 @@ const router = express.Router();
 
 router.get("/facebook/auth", authMiddleware, (req, res) => {
   try {
-    console.log("Initiating Facebook auth...");
     const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
     const redirectUri = `${baseUrl}/api/facebook/callback`;
+    // للتأكد من إعداد فيسبوك: النطاق المطلوب في "نطاقات التطبيق" = نطاق redirect_uri فقط (مثلاً www.sushiluha.com أو sushiluha.com)
+    console.log("Facebook redirect_uri (أضف هذا النطاق في فيسبوك):", redirectUri);
     const url = `https://www.facebook.com/v19.0/dialog/oauth?client_id=${
       process.env.FACEBOOK_APP_ID
     }&redirect_uri=${encodeURIComponent(
       redirectUri
     )}&scope=pages_read_engagement,pages_manage_posts,pages_messaging`;
     req.session.userId = req.userId;
-    console.log("Facebook auth URL generated:", url);
-    res.json({ url });
+    res.json({ url, redirectUri });
   } catch (error) {
     console.error("Facebook auth error:", error.message);
     res.status(500).json({ error: "Failed to initiate Facebook auth" });
