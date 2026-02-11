@@ -76,32 +76,28 @@ router.get("/instagram/callback", async (req, res) => {
       console.error("Instagram token response:", data);
       return res.status(500).send(`<html><body dir="rtl"><p>إنستغرام لم يرجّع رمز وصول. راجع لوج السيرفر.</p><script>window.close();</script></body></html>`);
     }
-    let accessToken = data.access_token;
+    const accessToken = data.access_token;
 
+    // Skip long-lived exchange: graph.instagram.com rejects both GET and POST for /access_token on this API.
+    // Short-lived token (1h) is saved; you can add refresh logic later.
+
+    let displayName = "Instagram";
     try {
-      const longLived = await axios.post(
-        "https://graph.instagram.com/access_token",
-        new URLSearchParams({
-          grant_type: "ig_exchange_token",
-          client_secret: clientSecret,
-          access_token: accessToken,
-        }),
-        { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
-      );
-      if (longLived.data?.access_token) accessToken = longLived.data.access_token;
+      const userResponse = await axios.get("https://graph.instagram.com/v18.0/me", {
+        params: { fields: "username" },
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      displayName = userResponse.data?.username || displayName;
     } catch (e) {
-      console.warn("Instagram long-lived token exchange failed:", e.response?.data || e.message);
+      if (data.user_id) displayName = `user_${data.user_id}`;
+      console.warn("Instagram /me failed, saving with displayName:", displayName, e.response?.data || e.message);
     }
-
-    const userResponse = await axios.get(
-      `https://graph.instagram.com/me?fields=username&access_token=${encodeURIComponent(accessToken)}`
-    );
     await Account.findOneAndUpdate(
       { userId, platform: "Instagram" },
-      { accessToken, displayName: userResponse.data?.username || "Instagram" },
+      { accessToken, displayName },
       { upsert: true, new: true }
     );
-    console.log("Instagram auth completed, user:", userResponse.data?.username);
+    console.log("Instagram auth completed, user:", displayName);
 
     res.send(`
       <script>
