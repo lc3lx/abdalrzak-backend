@@ -20,6 +20,16 @@ function toAbsoluteUrl(pathOrUrl, req) {
   return base.replace(/\/$/, "") + (pathOrUrl.startsWith("/") ? pathOrUrl : "/" + pathOrUrl);
 }
 
+// Detect if URL is a video (frontend often sends both image and video as imageUrl)
+function isVideoUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  const u = url.toLowerCase();
+  return (
+    u.includes("/uploads/videos/") ||
+    /\.(mp4|webm|mov|avi|wmv|flv|mkv)(\?|$)/i.test(u)
+  );
+}
+
 router.post("/post", authMiddleware, async (req, res) => {
   let { content, platforms, imageUrl, videoUrl } = req.body;
   imageUrl = toAbsoluteUrl(imageUrl, req);
@@ -141,7 +151,51 @@ router.post("/post", authMiddleware, async (req, res) => {
       }
     }
 
-    if (platforms.includes("Facebook") && imageUrl) {
+    const facebookVideoUrl = videoUrl || (imageUrl && isVideoUrl(imageUrl) ? imageUrl : null);
+    const facebookImageUrl = imageUrl && !isVideoUrl(imageUrl) ? imageUrl : null;
+
+    if (platforms.includes("Facebook") && facebookVideoUrl) {
+      const facebookAccount = accounts.find(
+        (acc) => acc.platform === "Facebook"
+      );
+      if (!facebookAccount || !facebookAccount.pageId) {
+        console.warn(
+          "Facebook not connected or page ID missing for userId:",
+          req.userId
+        );
+        results.Facebook = {
+          error: "Facebook not connected or page ID missing",
+        };
+      } else {
+        try {
+          console.log("Posting to Facebook with video...");
+          FB.setAccessToken(facebookAccount.accessToken);
+          const response = await new Promise((resolve, reject) => {
+            FB.api(
+              `/${facebookAccount.pageId}/videos`,
+              "POST",
+              { file_url: facebookVideoUrl, description: content },
+              (res) => (res.error ? reject(res.error) : resolve(res))
+            );
+          });
+          console.log("Facebook video posted:", response.id);
+
+          await Post.create({
+            userId: req.userId,
+            platform: "Facebook",
+            platformPostId: response.id,
+            content: content,
+            videoUrl: facebookVideoUrl,
+            status: "published",
+          });
+
+          results.Facebook = { message: "Video posted", postId: response.id };
+        } catch (err) {
+          console.error("Facebook (with video) error:", err.message);
+          results.Facebook = { error: err.message || "Failed to post video to Facebook" };
+        }
+      }
+    } else if (platforms.includes("Facebook") && facebookImageUrl) {
       const facebookAccount = accounts.find(
         (acc) => acc.platform === "Facebook"
       );
@@ -161,7 +215,7 @@ router.post("/post", authMiddleware, async (req, res) => {
             FB.api(
               `/${facebookAccount.pageId}/photos`,
               "POST",
-              { url: imageUrl, caption: content },
+              { url: facebookImageUrl, caption: content },
               (res) => (res.error ? reject(res.error) : resolve(res))
             );
           });
@@ -172,7 +226,7 @@ router.post("/post", authMiddleware, async (req, res) => {
             platform: "Facebook",
             platformPostId: response.id,
             content: content,
-            imageUrl: imageUrl,
+            imageUrl: facebookImageUrl,
             status: "published",
           });
 
