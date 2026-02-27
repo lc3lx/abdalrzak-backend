@@ -52,7 +52,6 @@ const referralSchema = new mongoose.Schema(
 // Indexes
 referralSchema.index({ referrerId: 1 });
 referralSchema.index({ referredUserId: 1 });
-referralSchema.index({ referralCode: 1 });
 referralSchema.index({ status: 1 });
 
 // Prevent duplicate referrals

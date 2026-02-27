@@ -6,7 +6,7 @@ export const connectDB = () => {
   console.log("Connecting to MongoDB:", mongoUri);
 
   mongoose
-    .connect(mongoUri, { useNewUrlParser: true, useUnifiedTopology: true })
+    .connect(mongoUri)
     .then(() => console.log("Connected to MongoDB"))
     .catch((err) => {
       console.error("MongoDB connection error:", err);

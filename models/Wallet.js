@@ -223,7 +223,6 @@ const walletSchema = new mongoose.Schema(
 );
 
 // Indexes for better performance
-walletSchema.index({ userId: 1 });
 walletSchema.index({ "transactions.createdAt": -1 });
 walletSchema.index({ "transactions.status": 1 });
 

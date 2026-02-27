@@ -60,7 +60,7 @@ const userSchema = new mongoose.Schema(
 );
 
 // Indexes
-userSchema.index({ referralCode: 1 });
 userSchema.index({ referredBy: 1 });
 
 export default mongoose.model("User", userSchema);
+ 
