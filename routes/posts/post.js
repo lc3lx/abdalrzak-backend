@@ -390,16 +390,17 @@ router.post("/post", authMiddleware, async (req, res) => {
             postId: igPostId,
           };
         } catch (err) {
-          console.error(
-            "Instagram posting error:",
-            err.response?.data || err.message
-          );
-          results.Instagram = {
-            error:
-              err.response?.data?.error?.message ||
-              err.message ||
-              "Failed to post to Instagram",
-          };
+          const igErr = err.response?.data?.error;
+          const code = igErr?.code;
+          const msg = igErr?.message || err.message;
+          console.error("Instagram posting error:", code, msg);
+          if (code === 190 || (msg && /invalid.*token|expired|parse access token/i.test(msg))) {
+            results.Instagram = {
+              error: "انتهت صلاحية ربط إنستغرام. ادخل إلى Integrations وأعد ربط إنستغرام ثم جرّب النشر مرة أخرى.",
+            };
+          } else {
+            results.Instagram = { error: msg || "Failed to post to Instagram" };
+          }
         }
       }
     }

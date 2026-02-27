@@ -76,10 +76,9 @@ router.get("/instagram/callback", async (req, res) => {
       console.error("Instagram token response:", data);
       return res.status(500).send(`<html><body dir="rtl"><p>إنستغرام لم يرجّع رمز وصول. راجع لوج السيرفر.</p><script>window.close();</script></body></html>`);
     }
-    const accessToken = data.access_token;
+    const accessToken = (data.access_token || "").toString().trim();
 
-    // Skip long-lived exchange: graph.instagram.com rejects both GET and POST for /access_token on this API.
-    // Short-lived token (1h) is saved; you can add refresh logic later.
+    // Short-lived token (1h). Reconnect Instagram if you get "Invalid OAuth access token" when posting.
 
     let displayName = "Instagram";
     let igUserId = data.user_id;
