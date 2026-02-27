@@ -83,9 +83,8 @@ router.get("/instagram/callback", async (req, res) => {
     let displayName = "Instagram";
     let igUserId = data.user_id;
     try {
-      const userResponse = await axios.get("https://graph.instagram.com/v18.0/me", {
-        params: { fields: "id,username" },
-        headers: { Authorization: `Bearer ${accessToken}` },
+      const userResponse = await axios.get("https://graph.instagram.com/me", {
+        params: { fields: "id,username", access_token: accessToken },
       });
       displayName = userResponse.data?.username || displayName;
       igUserId = userResponse.data?.id || igUserId;

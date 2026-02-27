@@ -291,63 +291,17 @@ router.post("/post", authMiddleware, async (req, res) => {
         results.Instagram = { error: "Image required for Instagram posting" };
       } else {
         try {
-          let igUserId =
-            instagramAccount.platformId ||
-            instagramAccount.pageId ||
-            instagramAccount.channelId;
+          const accessToken = instagramAccount.accessToken;
 
-          // Fallback: حاول جلب الـ IG User ID من /me إذا لم يكن مخزوناً
-          if (!igUserId) {
-            try {
-              console.log(
-                "Instagram platformId missing, fetching via graph.instagram.com/me..."
-              );
-              const meRes = await axios.get(
-                "https://graph.instagram.com/v18.0/me",
-                {
-                  params: { fields: "id" },
-                  headers: {
-                    Authorization: `Bearer ${instagramAccount.accessToken}`,
-                  },
-                }
-              );
-              igUserId = meRes.data?.id;
-              if (igUserId) {
-                await Account.findOneAndUpdate(
-                  {
-                    userId: req.userId,
-                    platform: "Instagram",
-                  },
-                  { platformId: igUserId.toString() }
-                );
-                console.log(
-                  "Instagram user ID fetched and stored:",
-                  igUserId
-                );
-              }
-            } catch (meErr) {
-              console.warn(
-                "Failed to fetch Instagram user ID via /me:",
-                meErr.response?.data || meErr.message
-              );
-            }
-          }
+          console.log("Posting to Instagram via Instagram Login API (graph.instagram.com)...");
 
-          if (!igUserId) {
-            throw new Error(
-              "Instagram user ID not stored. Please reconnect Instagram from Integrations."
-            );
-          }
-
-          console.log("Posting to Instagram via Graph API...");
-
-          // Step 1: Create media container
+          // Step 1: Create media container using /me/media
           const mediaRes = await axios.post(
-            `https://graph.facebook.com/v18.0/${igUserId}/media`,
+            "https://graph.instagram.com/me/media",
             new URLSearchParams({
               image_url: imageUrl,
               caption: content || "",
-              access_token: instagramAccount.accessToken,
+              access_token: accessToken,
             }),
             {
               headers: {
@@ -359,12 +313,12 @@ router.post("/post", authMiddleware, async (req, res) => {
           const creationId = mediaRes.data.id;
           console.log("Instagram media container created:", creationId);
 
-          // Step 2: Publish media
+          // Step 2: Publish media using /me/media_publish
           const publishRes = await axios.post(
-            `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
+            "https://graph.instagram.com/me/media_publish",
             new URLSearchParams({
               creation_id: creationId,
-              access_token: instagramAccount.accessToken,
+              access_token: accessToken,
             }),
             {
               headers: {
@@ -393,10 +347,10 @@ router.post("/post", authMiddleware, async (req, res) => {
           const igErr = err.response?.data?.error;
           const code = igErr?.code;
           const msg = igErr?.message || err.message;
-          console.error("Instagram posting error:", code, msg);
+          console.error("Instagram posting error:", code, msg, err.response?.data);
           if (code === 190 || (msg && /invalid.*token|expired|parse access token/i.test(msg))) {
             results.Instagram = {
-              error: "انتهت صلاحية ربط إنستغرام. ادخل إلى Integrations وأعد ربط إنستغرام ثم جرّب النشر مرة أخرى.",
+              error: "انتهت صلاحية ربط إنستغرام أو أن صلاحيات التطبيق غير كافية للنشر. ادخل إلى Integrations وأعد ربط إنستغرام وتأكد من إعدادات تطبيق ميتا ثم جرّب النشر مرة أخرى.",
             };
           } else {
             results.Instagram = { error: msg || "Failed to post to Instagram" };
