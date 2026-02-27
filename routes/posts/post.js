@@ -291,21 +291,34 @@ router.post("/post", authMiddleware, async (req, res) => {
         results.Instagram = { error: "Image required for Instagram posting" };
       } else {
         try {
-          const accessToken = instagramAccount.accessToken;
+          const accessToken = (instagramAccount.accessToken || "").toString().trim();
+          const igUserId =
+            instagramAccount.platformId ||
+            instagramAccount.pageId ||
+            instagramAccount.channelId;
+
+          if (!igUserId) {
+            throw new Error(
+              "Instagram user ID not stored. Please disconnect and reconnect Instagram from Integrations."
+            );
+          }
+
+          const graphHost = "https://graph.instagram.com";
+          const apiVersion = "v21.0";
 
           console.log("Posting to Instagram via Instagram Login API (graph.instagram.com)...");
 
-          // Step 1: Create media container using /me/media
+          // Step 1: Create media container — POST /{ig-user-id}/media (JSON + Bearer)
           const mediaRes = await axios.post(
-            "https://graph.instagram.com/me/media",
-            new URLSearchParams({
+            `${graphHost}/${apiVersion}/${igUserId}/media`,
+            {
               image_url: imageUrl,
               caption: content || "",
-              access_token: accessToken,
-            }),
+            },
             {
               headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${accessToken}`,
               },
             }
           );
@@ -313,16 +326,14 @@ router.post("/post", authMiddleware, async (req, res) => {
           const creationId = mediaRes.data.id;
           console.log("Instagram media container created:", creationId);
 
-          // Step 2: Publish media using /me/media_publish
+          // Step 2: Publish media — POST /{ig-user-id}/media_publish (JSON + Bearer)
           const publishRes = await axios.post(
-            "https://graph.instagram.com/me/media_publish",
-            new URLSearchParams({
-              creation_id: creationId,
-              access_token: accessToken,
-            }),
+            `${graphHost}/${apiVersion}/${igUserId}/media_publish`,
+            { creation_id: creationId },
             {
               headers: {
-                "Content-Type": "application/x-www-form-urlencoded",
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${accessToken}`,
               },
             }
           );
@@ -350,7 +361,11 @@ router.post("/post", authMiddleware, async (req, res) => {
           console.error("Instagram posting error:", code, msg, err.response?.data);
           if (code === 190 || (msg && /invalid.*token|expired|parse access token/i.test(msg))) {
             results.Instagram = {
-              error: "انتهت صلاحية ربط إنستغرام أو أن صلاحيات التطبيق غير كافية للنشر. ادخل إلى Integrations وأعد ربط إنستغرام وتأكد من إعدادات تطبيق ميتا ثم جرّب النشر مرة أخرى.",
+              error: "انتهت صلاحية ربط إنستغرام. ادخل إلى Integrations وأعد ربط إنستغرام ثم جرّب النشر مرة أخرى.",
+            };
+          } else if (code === 100 || (msg && /unsupported request/i.test(msg))) {
+            results.Instagram = {
+              error: "تطبيق ميتا أو نوع تسجيل الدخول غير متوافق مع النشر. تأكد أن التطبيق من نوع Instagram (Instagram API with Instagram Login) وليس Basic Display، وأعد ربط إنستغرام من Integrations.",
             };
           } else {
             results.Instagram = { error: msg || "Failed to post to Instagram" };

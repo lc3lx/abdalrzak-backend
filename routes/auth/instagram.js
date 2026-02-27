@@ -80,21 +80,9 @@ router.get("/instagram/callback", async (req, res) => {
 
     // Short-lived token (1h). Reconnect Instagram if you get "Invalid OAuth access token" when posting.
 
-    let displayName = "Instagram";
-    let igUserId = data.user_id;
-    try {
-      const userResponse = await axios.get("https://graph.instagram.com/me", {
-        params: { fields: "id,username", access_token: accessToken },
-      });
-      displayName = userResponse.data?.username || displayName;
-      igUserId = userResponse.data?.id || igUserId;
-    } catch (e) {
-      if (data.user_id) {
-        igUserId = data.user_id;
-        displayName = displayName === "Instagram" ? `user_${data.user_id}` : displayName;
-      }
-      console.warn("Instagram /me failed, saving with displayName:", displayName, e.response?.data || e.message);
-    }
+    // Rely only on the user_id returned from the token exchange
+    const igUserId = data.user_id;
+    const displayName = igUserId ? `user_${igUserId}` : "Instagram";
     await Account.findOneAndUpdate(
       { userId, platform: "Instagram" },
       { accessToken, displayName, platformId: igUserId?.toString() },
