@@ -82,19 +82,24 @@ router.get("/instagram/callback", async (req, res) => {
     // Short-lived token (1h) is saved; you can add refresh logic later.
 
     let displayName = "Instagram";
+    let igUserId = data.user_id;
     try {
       const userResponse = await axios.get("https://graph.instagram.com/v18.0/me", {
-        params: { fields: "username" },
+        params: { fields: "id,username" },
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       displayName = userResponse.data?.username || displayName;
+      igUserId = userResponse.data?.id || igUserId;
     } catch (e) {
-      if (data.user_id) displayName = `user_${data.user_id}`;
+      if (data.user_id) {
+        igUserId = data.user_id;
+        displayName = displayName === "Instagram" ? `user_${data.user_id}` : displayName;
+      }
       console.warn("Instagram /me failed, saving with displayName:", displayName, e.response?.data || e.message);
     }
     await Account.findOneAndUpdate(
       { userId, platform: "Instagram" },
-      { accessToken, displayName },
+      { accessToken, displayName, platformId: igUserId?.toString() },
       { upsert: true, new: true }
     );
     console.log("Instagram auth completed, user:", displayName);

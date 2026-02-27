@@ -280,22 +280,90 @@ router.post("/post", authMiddleware, async (req, res) => {
       }
     }
 
-    if (platforms.includes("Instagram") && imageUrl) {
+    if (platforms.includes("Instagram")) {
       const instagramAccount = accounts.find(
         (acc) => acc.platform === "Instagram"
       );
       if (!instagramAccount) {
         console.warn("Instagram not connected for userId:", req.userId);
         results.Instagram = { error: "Instagram not connected" };
+      } else if (!imageUrl) {
+        results.Instagram = { error: "Image required for Instagram posting" };
       } else {
-        console.log("Mocking Instagram post for demo...");
-        results.Instagram = {
-          message: "Post created (mocked)",
-          postId: "mock-instagram-id",
-        };
+        try {
+          const igUserId =
+            instagramAccount.platformId ||
+            instagramAccount.pageId ||
+            instagramAccount.channelId;
+          if (!igUserId) {
+            throw new Error(
+              "Instagram user ID not stored. Please reconnect Instagram from Integrations."
+            );
+          }
+
+          console.log("Posting to Instagram via Graph API...");
+
+          // Step 1: Create media container
+          const mediaRes = await axios.post(
+            `https://graph.facebook.com/v18.0/${igUserId}/media`,
+            new URLSearchParams({
+              image_url: imageUrl,
+              caption: content || "",
+              access_token: instagramAccount.accessToken,
+            }),
+            {
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+            }
+          );
+
+          const creationId = mediaRes.data.id;
+          console.log("Instagram media container created:", creationId);
+
+          // Step 2: Publish media
+          const publishRes = await axios.post(
+            `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
+            new URLSearchParams({
+              creation_id: creationId,
+              access_token: instagramAccount.accessToken,
+            }),
+            {
+              headers: {
+                "Content-Type": "application/x-www-form-urlencoded",
+              },
+            }
+          );
+
+          const igPostId = publishRes.data.id;
+          console.log("Instagram post published:", igPostId);
+
+          await Post.create({
+            userId: req.userId,
+            platform: "Instagram",
+            platformPostId: igPostId,
+            content: content,
+            imageUrl: imageUrl,
+            status: "published",
+          });
+
+          results.Instagram = {
+            message: "Instagram post published",
+            postId: igPostId,
+          };
+        } catch (err) {
+          console.error(
+            "Instagram posting error:",
+            err.response?.data || err.message
+          );
+          results.Instagram = {
+            error:
+              err.response?.data?.error?.message ||
+              err.message ||
+              "Failed to post to Instagram",
+          };
+        }
       }
-    } else if (platforms.includes("Instagram")) {
-      results.Instagram = { error: "Image required for Instagram posting" };
     }
 
     if (platforms.includes("TikTok")) {
