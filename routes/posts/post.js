@@ -284,92 +284,142 @@ router.post("/post", authMiddleware, async (req, res) => {
       const instagramAccount = accounts.find(
         (acc) => acc.platform === "Instagram"
       );
+      const facebookAccount = accounts.find(
+        (acc) => acc.platform === "Facebook"
+      );
       if (!instagramAccount) {
         console.warn("Instagram not connected for userId:", req.userId);
         results.Instagram = { error: "Instagram not connected" };
       } else if (!imageUrl) {
         results.Instagram = { error: "Image required for Instagram posting" };
       } else {
-        try {
-          const accessToken = (instagramAccount.accessToken || "").toString().trim();
-          const igUserId =
-            instagramAccount.platformId ||
-            instagramAccount.pageId ||
-            instagramAccount.channelId;
+        let igPublished = false;
+        const apiVersion = "v21.0";
 
-          if (!igUserId) {
-            throw new Error(
-              "Instagram user ID not stored. Please disconnect and reconnect Instagram from Integrations."
+        // ——— 1) Try Instagram Login API (graph.instagram.com) ———
+        const accessToken = (instagramAccount.accessToken || "").toString().trim();
+        const igUserId =
+          instagramAccount.platformId ||
+          instagramAccount.pageId ||
+          instagramAccount.channelId;
+
+        if (igUserId && accessToken) {
+          try {
+            console.log("Posting to Instagram via Instagram Login API (graph.instagram.com)...");
+            const mediaRes = await axios.post(
+              `https://graph.instagram.com/${apiVersion}/${igUserId}/media`,
+              { image_url: imageUrl, caption: content || "" },
+              {
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${accessToken}`,
+                },
+              }
             );
+            const creationId = mediaRes.data.id;
+            const publishRes = await axios.post(
+              `https://graph.instagram.com/${apiVersion}/${igUserId}/media_publish`,
+              { creation_id: creationId },
+              {
+                headers: {
+                  "Content-Type": "application/json",
+                  Authorization: `Bearer ${accessToken}`,
+                },
+              }
+            );
+            const igPostId = publishRes.data.id;
+            console.log("Instagram post published (Instagram Login):", igPostId);
+            await Post.create({
+              userId: req.userId,
+              platform: "Instagram",
+              platformPostId: igPostId,
+              content: content,
+              imageUrl: imageUrl,
+              status: "published",
+            });
+            results.Instagram = { message: "Instagram post published", postId: igPostId };
+            igPublished = true;
+          } catch (err) {
+            const code = err.response?.data?.error?.code;
+            const msg = err.response?.data?.error?.message || err.message;
+            console.error("Instagram (Login API) error:", code, msg);
+            if (code !== 100 && !/unsupported request/i.test(msg || "")) {
+              if (code === 190 || /invalid.*token|expired|parse access token/i.test(msg || "")) {
+                results.Instagram = {
+                  error: "انتهت صلاحية ربط إنستغرام. ادخل إلى Integrations وأعد ربط إنستغرام ثم جرّب النشر مرة أخرى.",
+                };
+              } else {
+                results.Instagram = { error: msg || "Failed to post to Instagram" };
+              }
+            }
           }
+        }
 
-          const graphHost = "https://graph.instagram.com";
-          const apiVersion = "v21.0";
-
-          console.log("Posting to Instagram via Instagram Login API (graph.instagram.com)...");
-
-          // Step 1: Create media container — POST /{ig-user-id}/media (JSON + Bearer)
-          const mediaRes = await axios.post(
-            `${graphHost}/${apiVersion}/${igUserId}/media`,
-            {
-              image_url: imageUrl,
-              caption: content || "",
-            },
-            {
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${accessToken}`,
-              },
+        // ——— 2) Fallback: publish via Facebook Page (Instagram Business linked to Page) ———
+        if (!igPublished && facebookAccount?.accessToken && facebookAccount?.pageId) {
+          try {
+            const pageToken = (facebookAccount.accessToken || "").toString().trim();
+            const pageId = facebookAccount.pageId;
+            const pageInfo = await axios.get(
+              `https://graph.facebook.com/${apiVersion}/${pageId}`,
+              {
+                params: {
+                  fields: "instagram_business_account",
+                  access_token: pageToken,
+                },
+              }
+            );
+            const igBusinessId = pageInfo.data?.instagram_business_account?.id;
+            if (igBusinessId) {
+              console.log("Posting to Instagram via Facebook Page (graph.facebook.com)...");
+              const mediaRes = await axios.post(
+                `https://graph.facebook.com/${apiVersion}/${igBusinessId}/media`,
+                null,
+                {
+                  params: {
+                    image_url: imageUrl,
+                    caption: content || "",
+                    access_token: pageToken,
+                  },
+                }
+              );
+              const creationId = mediaRes.data.id;
+              const publishRes = await axios.post(
+                `https://graph.facebook.com/${apiVersion}/${igBusinessId}/media_publish`,
+                null,
+                {
+                  params: {
+                    creation_id: creationId,
+                    access_token: pageToken,
+                  },
+                }
+              );
+              const igPostId = publishRes.data.id;
+              console.log("Instagram post published (via Facebook Page):", igPostId);
+              await Post.create({
+                userId: req.userId,
+                platform: "Instagram",
+                platformPostId: igPostId,
+                content: content,
+                imageUrl: imageUrl,
+                status: "published",
+              });
+              results.Instagram = { message: "Instagram post published", postId: igPostId };
+              igPublished = true;
             }
-          );
-
-          const creationId = mediaRes.data.id;
-          console.log("Instagram media container created:", creationId);
-
-          // Step 2: Publish media — POST /{ig-user-id}/media_publish (JSON + Bearer)
-          const publishRes = await axios.post(
-            `${graphHost}/${apiVersion}/${igUserId}/media_publish`,
-            { creation_id: creationId },
-            {
-              headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${accessToken}`,
-              },
+          } catch (fbErr) {
+            const msg = fbErr.response?.data?.error?.message || fbErr.message;
+            console.error("Instagram (via Facebook Page) error:", msg);
+            if (!results.Instagram) {
+              results.Instagram = { error: msg || "Failed to post to Instagram" };
             }
-          );
+          }
+        }
 
-          const igPostId = publishRes.data.id;
-          console.log("Instagram post published:", igPostId);
-
-          await Post.create({
-            userId: req.userId,
-            platform: "Instagram",
-            platformPostId: igPostId,
-            content: content,
-            imageUrl: imageUrl,
-            status: "published",
-          });
-
+        if (!igPublished && !results.Instagram?.error) {
           results.Instagram = {
-            message: "Instagram post published",
-            postId: igPostId,
+            error: "تطبيق ميتا لا يدعم النشر من ربط إنستغرام الحالي. إمّا أن تربط إنستغرام عبر تطبيق من نوع Instagram API with Instagram Login، أو تربط صفحة فيسبوك مرتبطة بحساب إنستغرام تجاري ثم جرّب النشر مرة أخرى.",
           };
-        } catch (err) {
-          const igErr = err.response?.data?.error;
-          const code = igErr?.code;
-          const msg = igErr?.message || err.message;
-          console.error("Instagram posting error:", code, msg, err.response?.data);
-          if (code === 190 || (msg && /invalid.*token|expired|parse access token/i.test(msg))) {
-            results.Instagram = {
-              error: "انتهت صلاحية ربط إنستغرام. ادخل إلى Integrations وأعد ربط إنستغرام ثم جرّب النشر مرة أخرى.",
-            };
-          } else if (code === 100 || (msg && /unsupported request/i.test(msg))) {
-            results.Instagram = {
-              error: "تطبيق ميتا أو نوع تسجيل الدخول غير متوافق مع النشر. تأكد أن التطبيق من نوع Instagram (Instagram API with Instagram Login) وليس Basic Display، وأعد ربط إنستغرام من Integrations.",
-            };
-          } else {
-            results.Instagram = { error: msg || "Failed to post to Instagram" };
-          }
         }
       }
     }
