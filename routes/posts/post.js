@@ -291,10 +291,48 @@ router.post("/post", authMiddleware, async (req, res) => {
         results.Instagram = { error: "Image required for Instagram posting" };
       } else {
         try {
-          const igUserId =
+          let igUserId =
             instagramAccount.platformId ||
             instagramAccount.pageId ||
             instagramAccount.channelId;
+
+          // Fallback: حاول جلب الـ IG User ID من /me إذا لم يكن مخزوناً
+          if (!igUserId) {
+            try {
+              console.log(
+                "Instagram platformId missing, fetching via graph.instagram.com/me..."
+              );
+              const meRes = await axios.get(
+                "https://graph.instagram.com/v18.0/me",
+                {
+                  params: { fields: "id" },
+                  headers: {
+                    Authorization: `Bearer ${instagramAccount.accessToken}`,
+                  },
+                }
+              );
+              igUserId = meRes.data?.id;
+              if (igUserId) {
+                await Account.findOneAndUpdate(
+                  {
+                    userId: req.userId,
+                    platform: "Instagram",
+                  },
+                  { platformId: igUserId.toString() }
+                );
+                console.log(
+                  "Instagram user ID fetched and stored:",
+                  igUserId
+                );
+              }
+            } catch (meErr) {
+              console.warn(
+                "Failed to fetch Instagram user ID via /me:",
+                meErr.response?.data || meErr.message
+              );
+            }
+          }
+
           if (!igUserId) {
             throw new Error(
               "Instagram user ID not stored. Please reconnect Instagram from Integrations."
