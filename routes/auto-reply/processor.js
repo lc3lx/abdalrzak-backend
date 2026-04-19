@@ -522,6 +522,7 @@ async function sendWhatsAppReply(account, execution, step) {
       error: error.message,
     };
   }
+}
 // Send Instagram reply
 async function sendInstagramReply(account, execution, step) {
   try {
