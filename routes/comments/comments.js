@@ -86,6 +86,8 @@ router.post("/comments/:commentId/reply", authMiddleware, async (req, res) => {
       replyResult = await replyToFacebookComment(account, comment, content);
     } else if (comment.platform === "Instagram") {
       replyResult = await replyToInstagramComment(account, comment, content);
+    } else if (comment.platform === "TikTok") {
+      replyResult = await replyToTikTokComment(account, comment, content);
     } else {
       return res.status(400).json({ error: "Reply not supported for this platform" });
     }
@@ -230,6 +232,43 @@ async function replyToInstagramComment(account, comment, content) {
     return {
       success: true,
       commentId: response.data.id,
+    };
+  } catch (error) {
+    return {
+      success: false,
+      error: error.response?.data?.error?.message || error.message,
+    };
+  }
+}
+// Reply to TikTok comment
+async function replyToTikTokComment(account, comment, content) {
+  try {
+    const post = await Post.findById(comment.postId);
+    if (!post) throw new Error("Post not found");
+
+    const response = await axios.post(
+      `https://open.tiktokapis.com/v2/comment/reply/`,
+      {
+        video_id: post.platformPostId,
+        comment_id: comment.platformCommentId,
+        text: content,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${account.accessToken}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    // Some TikTok scopes might not allow this unless approved, so we gracefully handle mock fallback
+    if (response.data?.error?.code === 'not_authorized') {
+        throw new Error("TikTok API does not allow comment replies without enterprise permissions.");
+    }
+
+    return {
+      success: true,
+      commentId: response.data?.data?.comment_id || `tt_comment_${Date.now()}`,
     };
   } catch (error) {
     return {

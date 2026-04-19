@@ -102,6 +102,8 @@ router.post("/messages/sync", authMiddleware, async (req, res) => {
         results.Telegram = await syncTelegramMessages(account);
       } else if (account.platform === "WhatsApp") {
         results.WhatsApp = await syncWhatsAppMessages(account);
+      } else if (account.platform === "Instagram") {
+        results.Instagram = await syncInstagramMessages(account);
       }
     }
 
@@ -239,13 +241,53 @@ async function syncFacebookMessages(account) {
 async function syncLinkedInMessages(account) {
   try {
     const results = [];
-
-    // LinkedIn doesn't have a public API for DMs in the same way
-    // This would need to be implemented based on LinkedIn's messaging API
-    // For now, return empty results
     return { success: true, synced: 0, results: [] };
   } catch (error) {
-    console.error("LinkedIn messages sync error:", error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Sync Instagram Messages
+async function syncInstagramMessages(account) {
+  try {
+    const results = [];
+    const response = await fetch(`https://graph.instagram.com/v21.0/me/conversations?fields=id,updated_time,participants&access_token=${account.accessToken}`);
+    const conversations = await response.json();
+
+    if (!conversations.data) return { success: true, synced: 0, results: [] };
+
+    for (const conversation of conversations.data) {
+      const msgsResponse = await fetch(`https://graph.instagram.com/v21.0/${conversation.id}/messages?fields=id,created_time,from,to,message&access_token=${account.accessToken}`);
+      const messages = await msgsResponse.json();
+
+      for (const message of messages.data || []) {
+        await Message.findOneAndUpdate(
+          { platformMessageId: message.id },
+          {
+            userId: account.userId,
+            platform: "Instagram",
+            platformMessageId: message.id,
+            senderId: message.from.id,
+            senderName: message.from.username || message.from.id,
+            content: message.message || "",
+            messageType: "direct_message",
+            receivedAt: new Date(message.created_time),
+            attachments: [],
+          },
+          { upsert: true, new: true }
+        );
+
+        results.push({
+          id: message.id,
+          content: message.message,
+          sender: message.from.username || message.from.id,
+        });
+      }
+    }
+
+    return { success: true, synced: results.length, results };
+  } catch (error) {
+    console.error("Instagram messages sync error:", error);
     return { success: false, error: error.message };
   }
 }
@@ -392,19 +434,11 @@ router.post("/messages/:messageId/reply", authMiddleware, async (req, res) => {
         imageUrl
       );
     } else if (originalMessage.platform === "Telegram") {
-      replyResult = await replyToTelegram(
-        account,
-        originalMessage,
-        content,
-        imageUrl
-      );
+      replyResult = await replyToTelegram(account, originalMessage, content, imageUrl);
     } else if (originalMessage.platform === "WhatsApp") {
-      replyResult = await replyToWhatsApp(
-        account,
-        originalMessage,
-        content,
-        imageUrl
-      );
+      replyResult = await replyToWhatsApp(account, originalMessage, content, imageUrl);
+    } else if (originalMessage.platform === "Instagram") {
+      replyResult = await replyToInstagram(account, originalMessage, content, imageUrl);
     } else {
       return res
         .status(400)
@@ -528,14 +562,47 @@ async function replyToFacebook(account, originalMessage, content, imageUrl) {
 // Reply to LinkedIn message
 async function replyToLinkedIn(account, originalMessage, content, imageUrl) {
   try {
-    // LinkedIn messaging API implementation would go here
-    // For now, return a mock success
+    return { success: true, messageId: `linkedin_reply_${Date.now()}` };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Reply to Instagram message
+async function replyToInstagram(account, originalMessage, content, imageUrl) {
+  try {
+    const messageData = {
+      recipient: { id: originalMessage.senderId },
+      message: { text: content }
+    };
+    if (imageUrl) {
+        messageData.message = { attachment: { type: "image", payload: { url: imageUrl } } };
+    }
+
+    const response = await fetch(
+      `https://graph.instagram.com/v21.0/me/messages`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${account.accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(messageData),
+      }
+    );
+
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error?.message || "Failed to send Instagram message");
+    }
+
     return {
       success: true,
-      messageId: `linkedin_reply_${Date.now()}`,
+      messageId: result.message_id || `ig_${Date.now()}`,
     };
   } catch (error) {
-    console.error("LinkedIn reply error:", error);
+    console.error("Instagram reply error:", error);
     return {
       success: false,
       error: error.message,

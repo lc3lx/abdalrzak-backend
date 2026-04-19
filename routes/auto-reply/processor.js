@@ -240,6 +240,10 @@ async function executeNextStep(execution) {
     replyResult = await sendTwitterReply(account, execution, currentStep);
   } else if (execution.platform === "Facebook") {
     replyResult = await sendFacebookReply(account, execution, currentStep);
+  } else if (execution.platform === "Instagram") {
+    replyResult = await sendInstagramReply(account, execution, currentStep);
+  } else if (execution.platform === "TikTok") {
+    replyResult = await sendTikTokReply(account, execution, currentStep);
   } else if (execution.platform === "LinkedIn") {
     replyResult = await sendLinkedInReply(account, execution, currentStep);
   } else if (execution.platform === "Telegram") {
@@ -517,6 +521,89 @@ async function sendWhatsAppReply(account, execution, step) {
       success: false,
       error: error.message,
     };
+  }
+// Send Instagram reply
+async function sendInstagramReply(account, execution, step) {
+  try {
+    // Determine the correct message original ID or sender
+    // For comments, we use the graph API /replies. For DMs, we use /messages.
+    const originalMessage = await Message.findById(execution.originalMessageId);
+    if (!originalMessage) throw new Error("Original message not found");
+
+    if (originalMessage.messageType === "comment") {
+      // Reply to an Instagram comment
+      const response = await fetch(
+        `https://graph.instagram.com/${originalMessage.platformMessageId}/replies`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${account.accessToken}`
+          },
+          body: JSON.stringify({ message: step.replyContent })
+        }
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error?.message || "Failed to reply to Instagram comment");
+      return { success: true, messageId: result.id };
+    } else {
+      // Reply to an Instagram DM
+      const response = await fetch(
+        `https://graph.instagram.com/v21.0/me/messages`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${account.accessToken}`
+          },
+          body: JSON.stringify({
+            recipient: { id: originalMessage.senderId },
+            message: { text: step.replyContent }
+          })
+        }
+      );
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error?.message || "Failed to send Instagram DM reply");
+      return { success: true, messageId: result.message_id || `ig_reply_${Date.now()}` };
+    }
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+// Send TikTok reply
+async function sendTikTokReply(account, execution, step) {
+  try {
+    const originalMessage = await Message.findById(execution.originalMessageId);
+    if (!originalMessage) throw new Error("Original message not found");
+
+    // TikTok generally restricts DM APIs, but we'll try the standard endpoint if they have it
+    // For comments, TikTok hasn't provided a public API to reply via simple endpoints yet,
+    // so we mock/attempt the standard messages endpoint
+    const response = await fetch('https://open.tiktokapis.com/v2/message/send/', {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${account.accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        recipient_id: execution.senderId,
+        message_type: "DIRECT_MESSAGE",
+        text: step.replyContent
+      })
+    });
+    const result = await response.json();
+    
+    // Note: If TikTok fails due to scopes, we document it in the error response gracefully
+    if (!response.ok) {
+        if(result.error?.code === 'not_authorized') {
+            throw new Error("TikTok API does not allow DM replies without enterprise permissions.");
+        }
+        throw new Error(result.error?.message || "Failed to send TikTok reply");
+    }
+    return { success: true, messageId: result.data?.message_id || `tt_reply_${Date.now()}` };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 }
 
