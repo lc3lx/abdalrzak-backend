@@ -84,7 +84,7 @@ async function processFacebookMessage(messagingEvent, pageId) {
     }
 
     // Save the message to database
-    await Message.findOneAndUpdate(
+    const savedMessage = await Message.findOneAndUpdate(
       { 
         platformMessageId: messageId,
         platform: "Facebook"
@@ -106,7 +106,7 @@ async function processFacebookMessage(messagingEvent, pageId) {
     );
 
     // Trigger auto-reply processing
-    await triggerAutoReply(account.userId, messageId);
+    await triggerAutoReply(account.userId, savedMessage._id);
 
   } catch (error) {
     console.error("Error processing Facebook message:", error);
