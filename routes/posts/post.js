@@ -5,6 +5,18 @@ import FB from "fb";
 import Account from "../../models/Account.js";
 import Post from "../../models/Post.js";
 import { authMiddleware } from "../../middleware/auth.js";
+import {
+  getTikTokApiError,
+  initTikTokPhotoPost,
+  initTikTokVideoPostFromUrl,
+  pickTikTokPrivacyLevel,
+  queryTikTokCreatorInfo,
+  refreshTikTokTokenIfNeeded,
+} from "../../services/tiktok.js";
+import {
+  getWhatsAppApiError,
+  sendWhatsAppMessage,
+} from "../../services/whatsapp.js";
 
 const router = express.Router();
 
@@ -31,7 +43,7 @@ function isVideoUrl(url) {
 }
 
 router.post("/post", authMiddleware, async (req, res) => {
-  let { content, platforms, imageUrl, videoUrl } = req.body;
+  let { content, platforms, imageUrl, videoUrl, whatsappTo, phoneNumber, to } = req.body;
   imageUrl = toAbsoluteUrl(imageUrl, req);
   videoUrl = toAbsoluteUrl(videoUrl, req);
   console.log("Post request received:", { content, platforms, imageUrl, videoUrl });
@@ -290,11 +302,15 @@ router.post("/post", authMiddleware, async (req, res) => {
       if (!instagramAccount) {
         console.warn("Instagram not connected for userId:", req.userId);
         results.Instagram = { error: "Instagram not connected" };
-      } else if (!imageUrl) {
-        results.Instagram = { error: "Image required for Instagram posting" };
+      } else if (!imageUrl && !videoUrl) {
+        results.Instagram = { error: "Image or video required for Instagram posting" };
       } else {
         let igPublished = false;
         const apiVersion = "v21.0";
+        const instagramVideoUrl =
+          videoUrl || (imageUrl && isVideoUrl(imageUrl) ? imageUrl : null);
+        const instagramImageUrl =
+          imageUrl && !isVideoUrl(imageUrl) ? imageUrl : null;
 
         // ——— 1) Try Instagram Login API (graph.instagram.com) ———
         const accessToken = (instagramAccount.accessToken || "").toString().trim();
@@ -306,9 +322,16 @@ router.post("/post", authMiddleware, async (req, res) => {
         if (igUserId && accessToken) {
           try {
             console.log("Posting to Instagram via Instagram Login API (graph.instagram.com)...");
+            const mediaPayload = instagramVideoUrl
+              ? {
+                  media_type: "REELS",
+                  video_url: instagramVideoUrl,
+                  caption: content || "",
+                }
+              : { image_url: instagramImageUrl, caption: content || "" };
             const mediaRes = await axios.post(
               `https://graph.instagram.com/${apiVersion}/${igUserId}/media`,
-              { image_url: imageUrl, caption: content || "" },
+              mediaPayload,
               {
                 headers: {
                   "Content-Type": "application/json",
@@ -334,7 +357,8 @@ router.post("/post", authMiddleware, async (req, res) => {
               platform: "Instagram",
               platformPostId: igPostId,
               content: content,
-              imageUrl: imageUrl,
+              imageUrl: instagramImageUrl,
+              videoUrl: instagramVideoUrl,
               status: "published",
             });
             results.Instagram = { message: "Instagram post published", postId: igPostId };
@@ -372,15 +396,23 @@ router.post("/post", authMiddleware, async (req, res) => {
             const igBusinessId = pageInfo.data?.instagram_business_account?.id;
             if (igBusinessId) {
               console.log("Posting to Instagram via Facebook Page (graph.facebook.com)...");
+              const mediaParams = instagramVideoUrl
+                ? {
+                    media_type: "REELS",
+                    video_url: instagramVideoUrl,
+                    caption: content || "",
+                    access_token: pageToken,
+                  }
+                : {
+                    image_url: instagramImageUrl,
+                    caption: content || "",
+                    access_token: pageToken,
+                  };
               const mediaRes = await axios.post(
                 `https://graph.facebook.com/${apiVersion}/${igBusinessId}/media`,
                 null,
                 {
-                  params: {
-                    image_url: imageUrl,
-                    caption: content || "",
-                    access_token: pageToken,
-                  },
+                  params: mediaParams,
                 }
               );
               const creationId = mediaRes.data.id;
@@ -401,7 +433,8 @@ router.post("/post", authMiddleware, async (req, res) => {
                 platform: "Instagram",
                 platformPostId: igPostId,
                 content: content,
-                imageUrl: imageUrl,
+                imageUrl: instagramImageUrl,
+                videoUrl: instagramVideoUrl,
                 status: "published",
               });
               results.Instagram = { message: "Instagram post published", postId: igPostId };
@@ -433,92 +466,25 @@ router.post("/post", authMiddleware, async (req, res) => {
         try {
           console.log("Posting to TikTok...");
 
-          // Check if token needs refresh
-          if (tiktokAccount.expiresAt && new Date() > tiktokAccount.expiresAt) {
-            console.log("TikTok token expired, refreshing...");
-            const refreshResponse = await axios.post(
-              "https://open.tiktokapis.com/v2/oauth/token/",
-              {
-                client_key: process.env.TIKTOK_CLIENT_KEY,
-                client_secret: process.env.TIKTOK_CLIENT_SECRET,
-                grant_type: "refresh_token",
-                refresh_token: tiktokAccount.refreshToken,
-              },
-              {
-                headers: {
-                  "Content-Type": "application/x-www-form-urlencoded",
-                },
-              }
-            );
+          await refreshTikTokTokenIfNeeded(tiktokAccount, req.userId);
+          const creatorInfo = await queryTikTokCreatorInfo(tiktokAccount.accessToken);
+          const privacyLevel = pickTikTokPrivacyLevel(creatorInfo);
 
-            const { access_token, refresh_token, expires_in } =
-              refreshResponse.data;
-
-            await Account.findOneAndUpdate(
-              { userId: req.userId, platform: "TikTok" },
-              {
-                accessToken: access_token,
-                refreshToken: refresh_token,
-                expiresAt: new Date(Date.now() + expires_in * 1000),
-              }
-            );
-
-            tiktokAccount.accessToken = access_token;
-          }
-
-          // TikTok video posting
-          // Note: TikTok requires video for publishing. Use /api/tiktok/upload endpoint for video uploads
           if (videoUrl) {
             try {
               console.log("Posting video to TikTok from URL...");
-              
-              // Step 1: Initialize video upload
-              const initResponse = await axios.post(
-                "https://open.tiktokapis.com/v2/post/publish/video/init/",
-                {
-                  post_info: {
-                    title: content || "Video Post",
-                    privacy_level: "PUBLIC_TO_EVERYONE",
-                    disable_duet: false,
-                    disable_comment: false,
-                    disable_stitch: false,
-                    video_cover_timestamp_ms: 1000,
-                  },
-                  source_info: {
-                    source: "FILE_UPLOAD",
-                  },
-                },
-                {
-                  headers: {
-                    Authorization: `Bearer ${tiktokAccount.accessToken}`,
-                    "Content-Type": "application/json",
-                  },
-                }
-              );
-
-              const { publish_id, upload_url } = initResponse.data.data;
-
-              // Step 2: Download and upload video file
-              const videoResponse = await axios.get(videoUrl, {
-                responseType: "stream",
+              const initData = await initTikTokVideoPostFromUrl({
+                accessToken: tiktokAccount.accessToken,
+                title: content || "Video Post",
+                videoUrl,
+                privacyLevel,
               });
-
-              await axios.put(upload_url, videoResponse.data, {
-                headers: {
-                  "Content-Type": "video/mp4",
-                },
-                maxContentLength: Infinity,
-                maxBodyLength: Infinity,
-              });
-
-              // Step 3: Check publish status (async, will be processed by TikTok)
-              const publishId = publish_id;
 
               // Save to database with processing status
               await Post.create({
                 userId: req.userId,
                 platform: "TikTok",
-                platformPostId: publishId,
+                platformPostId: initData.publish_id,
                 content: content,
                 videoUrl: videoUrl,
                 status: "processing",
@@ -526,39 +492,60 @@ router.post("/post", authMiddleware, async (req, res) => {
 
               results.TikTok = {
                 message: "TikTok video upload initiated",
-                publishId: publishId,
+                publishId: initData.publish_id,
+                privacyLevel,
                 note: "Video is being processed. Check status using /api/tiktok/upload-status/:publishId",
               };
             } catch (videoError) {
               console.error("TikTok video posting error:", videoError.response?.data || videoError.message);
               results.TikTok = {
-                error: `Video upload failed: ${videoError.response?.data?.error?.message || videoError.message}`,
-                note: "For better video upload support, use /api/tiktok/upload endpoint with file upload",
+                error: `Video upload failed: ${getTikTokApiError(videoError)}`,
+                note: "TikTok PULL_FROM_URL requires a public HTTPS URL from a verified domain. For local files, use /api/tiktok/upload.",
+              };
+            }
+          } else if (imageUrl) {
+            try {
+              console.log("Posting photo to TikTok from URL...");
+              const initData = await initTikTokPhotoPost({
+                accessToken: tiktokAccount.accessToken,
+                title: content?.slice(0, 90) || "Photo Post",
+                description: content || "",
+                photoUrls: [imageUrl],
+                privacyLevel,
+              });
+
+              await Post.create({
+                userId: req.userId,
+                platform: "TikTok",
+                platformPostId: initData.publish_id,
+                content: content,
+                imageUrl: imageUrl,
+                status: "processing",
+              });
+
+              results.TikTok = {
+                message: "TikTok photo post initiated",
+                publishId: initData.publish_id,
+                privacyLevel,
+                note: "Photo is being processed. Check status using /api/tiktok/upload-status/:publishId",
+              };
+            } catch (photoError) {
+              console.error("TikTok photo posting error:", photoError.response?.data || photoError.message);
+              results.TikTok = {
+                error: `Photo upload failed: ${getTikTokApiError(photoError)}`,
+                note: "TikTok photo posting requires public HTTPS image URLs from a verified domain.",
               };
             }
           } else {
-            // Text-only post (TikTok doesn't support text-only posts)
             console.log("TikTok text post - TikTok requires video for publishing");
-
-            // Save to database as draft
-            await Post.create({
-              userId: req.userId,
-              platform: "TikTok",
-              platformPostId: `tiktok-draft-${Date.now()}`,
-              content: content,
-              imageUrl: imageUrl,
-              status: "draft",
-            });
-
             results.TikTok = {
-              message: "TikTok post saved as draft",
-              postId: `tiktok-draft-${Date.now()}`,
-              note: "TikTok requires video for publishing. Use /api/tiktok/upload endpoint to upload a video.",
+              error: "TikTok does not support text-only posting through the Content Posting API.",
+              note: "Attach a video or image URL, or use /api/tiktok/upload for a local video file.",
             };
           }
         } catch (error) {
           console.error("TikTok posting error:", error.message);
-          results.TikTok = { error: "Failed to post to TikTok" };
+          results.TikTok = { error: getTikTokApiError(error) };
         }
       }
     }
@@ -762,27 +749,37 @@ router.post("/post", authMiddleware, async (req, res) => {
       } else {
         try {
           console.log("Posting to WhatsApp...");
-          // Mock WhatsApp posting - in real implementation, you would use WhatsApp Business API
-          console.log("WhatsApp message sent (mock for demo)");
+          const recipient = whatsappTo || phoneNumber || to;
+          if (!recipient) {
+            throw new Error("WhatsApp recipient phone number is required");
+          }
+
+          const sendResult = await sendWhatsAppMessage({
+            phoneNumberId: whatsappAccount.pageId,
+            accessToken: whatsappAccount.accessToken,
+            to: recipient,
+            content,
+            imageUrl,
+          });
 
           // Save to database
           await Post.create({
             userId: req.userId,
             platform: "WhatsApp",
-            platformPostId: `whatsapp-${Date.now()}`,
+            platformPostId: sendResult.messageId || `whatsapp-${Date.now()}`,
             content: content,
             imageUrl: imageUrl,
             status: "published",
           });
 
           results.WhatsApp = {
-            message: "WhatsApp message sent (demo mode)",
-            messageId: `whatsapp-${Date.now()}`,
-            note: "This is a demo implementation",
+            message: "WhatsApp message sent",
+            messageId: sendResult.messageId,
+            recipient: sendResult.recipient,
           };
         } catch (error) {
           console.error("WhatsApp posting error:", error.message);
-          results.WhatsApp = { error: "Failed to send WhatsApp message" };
+          results.WhatsApp = { error: getWhatsAppApiError(error) };
         }
       }
     }

@@ -1,11 +1,11 @@
 import express from "express";
 import crypto from "crypto";
 import Account from "../../models/Account.js";
+import Message from "../../models/Message.js";
 import { authMiddleware } from "../../middleware/auth.js";
 
 const router = express.Router();
 
-// Get WhatsApp Business API connection URL
 router.get("/whatsapp/auth", authMiddleware, async (req, res) => {
   try {
     const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
@@ -17,11 +17,9 @@ router.get("/whatsapp/auth", authMiddleware, async (req, res) => {
         .json({ error: "WhatsApp Business API not configured" });
     }
 
-    // Create a unique state parameter for security
     const state = `whatsapp_${req.userId}_${Date.now()}`;
     req.session.whatsappState = state;
 
-    // WhatsApp Business API connection URL
     const authUrl = `https://wa.me/${phoneNumberId}?text=${encodeURIComponent(
       "start " + state
     )}`;
@@ -33,48 +31,57 @@ router.get("/whatsapp/auth", authMiddleware, async (req, res) => {
   }
 });
 
-// Handle WhatsApp webhook for message verification
 router.get("/whatsapp/webhook", async (req, res) => {
   try {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
 
-    // Verify the webhook
-    if (mode === "subscribe" && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+    const envTokenMatch = token === process.env.WHATSAPP_VERIFY_TOKEN;
+    const storedTokenMatch = await Account.exists({
+      platform: "WhatsApp",
+      accessSecret: token,
+    });
+
+    if (mode === "subscribe" && (envTokenMatch || storedTokenMatch)) {
       console.log("WhatsApp webhook verified successfully");
-      res.status(200).send(challenge);
-    } else {
-      console.log("WhatsApp webhook verification failed");
-      res.status(403).json({ error: "Forbidden" });
+      return res.status(200).send(challenge);
     }
+
+    console.log("WhatsApp webhook verification failed");
+    return res.status(403).json({ error: "Forbidden" });
   } catch (error) {
     console.error("WhatsApp webhook verification error:", error);
     res.status(500).json({ error: "Webhook verification failed" });
   }
 });
 
-// Handle WhatsApp webhook for incoming messages
 router.post("/whatsapp/webhook", async (req, res) => {
   try {
-    // Verify webhook signature for security
     const signature = req.headers["x-hub-signature-256"];
-    if (signature && !verifyWhatsAppSignature(req.body, signature)) {
+    if (signature && !verifyWhatsAppSignature(req.rawBody, req.body, signature)) {
       console.log("WhatsApp webhook signature verification failed");
       return res.status(401).json({ error: "Invalid signature" });
     }
 
     const body = req.body;
 
-    // Check if it's a WhatsApp message
     if (body.object === "whatsapp_business_account") {
-      const entry = body.entry?.[0];
-      const changes = entry?.changes?.[0];
-      const value = changes?.value;
+      for (const entry of body.entry || []) {
+        for (const change of entry.changes || []) {
+          const value = change.value;
 
-      if (value?.messages) {
-        for (const message of value.messages) {
-          await processWhatsAppMessage(message, value.metadata);
+          if (value?.messages) {
+            for (const message of value.messages) {
+              await processWhatsAppMessage(message, value.metadata, value.contacts);
+            }
+          }
+
+          if (value?.statuses) {
+            for (const status of value.statuses) {
+              await processWhatsAppStatus(status);
+            }
+          }
         }
       }
     }
@@ -86,71 +93,120 @@ router.post("/whatsapp/webhook", async (req, res) => {
   }
 });
 
-// Verify WhatsApp webhook signature
-function verifyWhatsAppSignature(body, signature) {
-  // WhatsApp uses the same App Secret as Facebook (since it's part of Meta)
-  const appSecret = process.env.WHATSAPP_APP_SECRET || process.env.FACEBOOK_APP_SECRET;
-  
+function verifyWhatsAppSignature(rawBody, body, signature) {
+  const appSecret =
+    process.env.WHATSAPP_APP_SECRET || process.env.FACEBOOK_APP_SECRET;
+
   if (!signature || !appSecret) {
-    // If no secret configured, skip verification (not recommended for production)
-    console.warn("WhatsApp webhook signature verification skipped: No app secret configured");
+    console.warn(
+      "WhatsApp webhook signature verification skipped: No app secret configured"
+    );
     return true;
   }
 
+  const payload = rawBody || JSON.stringify(body);
   const expectedSignature = crypto
     .createHmac("sha256", appSecret)
-    .update(JSON.stringify(body))
+    .update(payload)
     .digest("hex");
 
-  return signature === `sha256=${expectedSignature}`;
+  const expected = Buffer.from(`sha256=${expectedSignature}`);
+  const received = Buffer.from(signature);
+
+  return expected.length === received.length && crypto.timingSafeEqual(expected, received);
 }
 
-// Process incoming WhatsApp message
-async function processWhatsAppMessage(message, metadata) {
-  try {
-    const phoneNumberId = metadata.phone_number_id;
-    const from = message.from;
-    const messageType = message.type;
-    const timestamp = message.timestamp;
+function parseWhatsAppMessageContent(message) {
+  const messageType = message.type;
 
-    // Extract message content based on type
-    let content = "";
-    let attachments = [];
+  if (messageType === "text") {
+    return { content: message.text?.body || "", attachments: [] };
+  }
 
-    if (messageType === "text") {
-      content = message.text.body;
-    } else if (messageType === "image") {
-      content = message.image.caption || "[صورة]";
-      attachments = [
+  if (messageType === "image") {
+    return {
+      content: message.image?.caption || "[image]",
+      attachments: [
         {
           type: "image",
           mediaType: "image",
-          mediaId: message.image.id,
+          mediaId: message.image?.id,
         },
-      ];
-    } else if (messageType === "document") {
-      content = message.document.caption || "[مستند]";
-      attachments = [
+      ],
+    };
+  }
+
+  if (messageType === "video") {
+    return {
+      content: message.video?.caption || "[video]",
+      attachments: [
+        {
+          type: "video",
+          mediaType: "video",
+          mediaId: message.video?.id,
+        },
+      ],
+    };
+  }
+
+  if (messageType === "document") {
+    return {
+      content: message.document?.caption || "[document]",
+      attachments: [
         {
           type: "document",
           mediaType: "document",
-          mediaId: message.document.id,
+          mediaId: message.document?.id,
+          fileName: message.document?.filename,
         },
-      ];
-    } else if (messageType === "audio") {
-      content = "[رسالة صوتية]";
-      attachments = [
+      ],
+    };
+  }
+
+  if (messageType === "audio") {
+    return {
+      content: "[audio]",
+      attachments: [
         {
           type: "audio",
           mediaType: "audio",
-          mediaId: message.audio.id,
+          mediaId: message.audio?.id,
         },
-      ];
-    } else {
-      content = `[${messageType}]`;
+      ],
+    };
+  }
+
+  if (messageType === "button") {
+    return {
+      content: message.button?.text || message.button?.payload || "[button]",
+      attachments: [],
+    };
+  }
+
+  if (messageType === "interactive") {
+    return {
+      content:
+        message.interactive?.button_reply?.title ||
+        message.interactive?.list_reply?.title ||
+        "[interactive]",
+      attachments: [],
+    };
+  }
+
+  return { content: `[${messageType}]`, attachments: [] };
+}
+
+async function processWhatsAppMessage(message, metadata, contacts = []) {
+  try {
+    const phoneNumberId = metadata?.phone_number_id;
+    const from = message.from;
+    const timestamp = message.timestamp;
+    const { content, attachments } = parseWhatsAppMessageContent(message);
+
+    if (!phoneNumberId || !from || !message.id) {
+      return;
     }
 
-    // Find the account associated with this phone number
     const account = await Account.findOne({
       platform: "WhatsApp",
       pageId: phoneNumberId,
@@ -161,10 +217,10 @@ async function processWhatsAppMessage(message, metadata) {
       return;
     }
 
-    // Save the message to database
-    const Message = (await import("../../models/Message.js")).default;
+    const contact = contacts.find((item) => item.wa_id === from);
+    const senderName = contact?.profile?.name || from;
 
-    await Message.findOneAndUpdate(
+    const savedMessage = await Message.findOneAndUpdate(
       {
         platformMessageId: message.id,
         platform: "WhatsApp",
@@ -174,41 +230,46 @@ async function processWhatsAppMessage(message, metadata) {
         platform: "WhatsApp",
         platformMessageId: message.id,
         senderId: from,
-        senderName: from, // WhatsApp doesn't provide display name in webhook
-        content: content,
+        senderName,
+        content,
         messageType: "direct_message",
-        receivedAt: new Date(parseInt(timestamp) * 1000),
-        attachments: attachments,
+        receivedAt: new Date(Number(timestamp) * 1000),
+        attachments,
+        threadId: from,
         isRead: false,
         isArchived: false,
       },
       { upsert: true, new: true }
     );
 
-    // Trigger auto-reply processing
-    await triggerAutoReply(account.userId, message.id);
+    await triggerAutoReply(savedMessage._id);
   } catch (error) {
     console.error("Error processing WhatsApp message:", error);
   }
 }
 
-// Trigger auto-reply for WhatsApp message
-async function triggerAutoReply(userId, messageId) {
+async function processWhatsAppStatus(status) {
+  try {
+    await Message.findOneAndUpdate(
+      { platformMessageId: status.id, platform: "WhatsApp" },
+      { deliveryStatus: status.status }
+    );
+  } catch (error) {
+    console.error("Error processing WhatsApp status:", error);
+  }
+}
+
+async function triggerAutoReply(messageId) {
   try {
     const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
-    const response = await fetch(
-      `${baseUrl}/api/auto-reply/process`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${
-            process.env.INTERNAL_API_TOKEN || "internal"
-          }`, // You might need to implement internal auth
-        },
-        body: JSON.stringify({ messageId }),
-      }
-    );
+    const response = await fetch(`${baseUrl}/api/auto-reply/process`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.INTERNAL_API_TOKEN || "internal"}`,
+      },
+      body: JSON.stringify({ messageId }),
+    });
 
     if (response.ok) {
       console.log("Auto-reply triggered for WhatsApp message:", messageId);
@@ -218,7 +279,6 @@ async function triggerAutoReply(userId, messageId) {
   }
 }
 
-// Get WhatsApp account status
 router.get("/whatsapp/status", authMiddleware, async (req, res) => {
   try {
     const account = await Account.findOne({
@@ -234,7 +294,13 @@ router.get("/whatsapp/status", authMiddleware, async (req, res) => {
       connected: true,
       displayName: account.displayName,
       phoneNumber: account.pageId,
+      webhookUrl: account.webhookUrl,
       connectedAt: account.updatedAt,
+      capabilities: {
+        receiveMessages: true,
+        sendMessages: true,
+        autoReply: true,
+      },
     });
   } catch (error) {
     console.error("WhatsApp status error:", error);
@@ -242,7 +308,6 @@ router.get("/whatsapp/status", authMiddleware, async (req, res) => {
   }
 });
 
-// Disconnect WhatsApp account
 router.delete("/whatsapp/disconnect", authMiddleware, async (req, res) => {
   try {
     await Account.findOneAndDelete({

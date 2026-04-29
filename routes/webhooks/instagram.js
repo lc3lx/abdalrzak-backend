@@ -1,7 +1,9 @@
 import express from "express";
 import crypto from "crypto";
 import Account from "../../models/Account.js";
+import Comment from "../../models/Comment.js";
 import Message from "../../models/Message.js";
+import Post from "../../models/Post.js";
 
 const router = express.Router();
 
@@ -26,7 +28,7 @@ router.post("/instagram/webhook", async (req, res) => {
   try {
     const signature = req.headers["x-hub-signature-256"];
     
-    if (!verifyInstagramSignature(req.body, signature)) {
+    if (!verifyInstagramSignature(req.rawBody, req.body, signature)) {
       return res.status(401).json({ error: "Invalid signature" });
     }
 
@@ -37,6 +39,14 @@ router.post("/instagram/webhook", async (req, res) => {
         if (instagramEntry.messaging) {
           for (const messagingEvent of instagramEntry.messaging) {
             await processInstagramMessage(messagingEvent, instagramEntry.id);
+          }
+        }
+
+        if (instagramEntry.changes) {
+          for (const change of instagramEntry.changes) {
+            if (change.field === "comments") {
+              await processInstagramComment(change.value, instagramEntry.id);
+            }
           }
         }
       }
@@ -53,13 +63,17 @@ router.post("/instagram/webhook", async (req, res) => {
 async function processInstagramMessage(messagingEvent, instagramId) {
   try {
     const senderId = messagingEvent.sender.id;
-    const recipientId = messagingEvent.recipient.id;
     const messageId = messagingEvent.message?.mid;
-    const messageText = messagingEvent.message?.text;
+    const messageText = messagingEvent.message?.text || "";
     const timestamp = messagingEvent.timestamp;
+    const attachments = extractInstagramAttachments(messagingEvent.message);
+
+    if (messagingEvent.message?.is_echo) {
+      return;
+    }
 
     // Skip if no message content
-    if (!messageId || !messageText) {
+    if (!messageId || (!messageText && attachments.length === 0)) {
       return;
     }
 
@@ -74,8 +88,7 @@ async function processInstagramMessage(messagingEvent, instagramId) {
       return;
     }
 
-    // Save the message to database
-    await Message.findOneAndUpdate(
+    const savedMessage = await Message.findOneAndUpdate(
       { 
         platformMessageId: messageId,
         platform: "Instagram"
@@ -89,7 +102,7 @@ async function processInstagramMessage(messagingEvent, instagramId) {
         content: messageText,
         messageType: "direct_message",
         receivedAt: new Date(timestamp),
-        attachments: extractInstagramAttachments(messagingEvent.message),
+        attachments,
         isRead: false,
         isArchived: false,
       },
@@ -97,10 +110,85 @@ async function processInstagramMessage(messagingEvent, instagramId) {
     );
 
     // Trigger auto-reply processing
-    await triggerAutoReply(account.userId, messageId);
+    await triggerAutoReply(savedMessage._id);
 
   } catch (error) {
     console.error("Error processing Instagram message:", error);
+  }
+}
+
+async function processInstagramComment(commentData, instagramId) {
+  try {
+    const commentId = commentData.id || commentData.comment_id;
+    const mediaId = commentData.media?.id || commentData.media_id;
+    const commentText = commentData.text || commentData.message || "";
+    const from = commentData.from || {};
+    const createdTime = commentData.created_time || Date.now();
+
+    if (!commentId || !mediaId || !commentText) {
+      return;
+    }
+
+    const account = await Account.findOne({
+      platform: "Instagram",
+      platformId: instagramId,
+    });
+
+    if (!account) {
+      console.log("No Instagram account found for comment:", instagramId);
+      return;
+    }
+
+    const post = await Post.findOne({
+      userId: account.userId,
+      platform: "Instagram",
+      platformPostId: mediaId.toString(),
+    });
+
+    if (!post) {
+      console.log("Instagram post not found for comment media:", mediaId);
+      return;
+    }
+
+    const comment = await Comment.findOneAndUpdate(
+      { platformCommentId: commentId.toString(), platform: "Instagram" },
+      {
+        postId: post._id,
+        platformCommentId: commentId.toString(),
+        platform: "Instagram",
+        authorName: from.username || from.name || "Instagram User",
+        authorId: from.id?.toString(),
+        content: commentText,
+        createdAt: new Date(createdTime),
+        isRead: false,
+      },
+      { upsert: true, new: true }
+    );
+
+    const messageDoc = await Message.findOneAndUpdate(
+      {
+        platformMessageId: commentId.toString(),
+        platform: "Instagram",
+        messageType: "comment",
+      },
+      {
+        userId: account.userId,
+        platform: "Instagram",
+        platformMessageId: commentId.toString(),
+        senderId: from.id?.toString(),
+        senderName: from.username || from.name || "Instagram User",
+        content: commentText,
+        messageType: "comment",
+        receivedAt: new Date(createdTime),
+        isRead: false,
+        isArchived: false,
+      },
+      { upsert: true, new: true }
+    );
+
+    await triggerAutoReply(messageDoc._id);
+  } catch (error) {
+    console.error("Error processing Instagram comment:", error);
   }
 }
 
@@ -130,21 +218,27 @@ function extractInstagramAttachments(message) {
 }
 
 // Verify Instagram webhook signature
-function verifyInstagramSignature(body, signature) {
-  if (!signature || !process.env.INSTAGRAM_CLIENT_SECRET) {
+function verifyInstagramSignature(rawBody, body, signature) {
+  const appSecret =
+    process.env.INSTAGRAM_CLIENT_SECRET || process.env.FACEBOOK_APP_SECRET;
+  if (!signature || !appSecret) {
     return false;
   }
 
+  const payload = rawBody || JSON.stringify(body);
   const expectedSignature = crypto
-    .createHmac("sha256", process.env.INSTAGRAM_CLIENT_SECRET)
-    .update(JSON.stringify(body))
+    .createHmac("sha256", appSecret)
+    .update(payload)
     .digest("hex");
 
-  return signature === `sha256=${expectedSignature}`;
+  const expected = Buffer.from(`sha256=${expectedSignature}`);
+  const received = Buffer.from(signature);
+
+  return expected.length === received.length && crypto.timingSafeEqual(expected, received);
 }
 
 // Trigger auto-reply for Instagram message
-async function triggerAutoReply(userId, messageId) {
+async function triggerAutoReply(messageId) {
   try {
     const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
     const response = await fetch(`${baseUrl}/api/auto-reply/process`, {

@@ -5,6 +5,11 @@ import FB from "fb";
 import Account from "../../models/Account.js";
 import Message from "../../models/Message.js";
 import { authMiddleware } from "../../middleware/auth.js";
+import { getUnsupportedTikTokMessagesMessage } from "../../services/tiktok.js";
+import {
+  getWhatsAppApiError,
+  sendWhatsAppMessage,
+} from "../../services/whatsapp.js";
 
 const router = express.Router();
 
@@ -104,6 +109,8 @@ router.post("/messages/sync", authMiddleware, async (req, res) => {
         results.WhatsApp = await syncWhatsAppMessages(account);
       } else if (account.platform === "Instagram") {
         results.Instagram = await syncInstagramMessages(account);
+      } else if (account.platform === "TikTok") {
+        results.TikTok = await syncTikTokMessages(account);
       }
     }
 
@@ -181,7 +188,7 @@ async function syncFacebookMessages(account) {
     // Get conversations
     const conversations = await new Promise((resolve, reject) => {
       FB.api(
-        "/me/conversations",
+        `/${account.pageId}/conversations`,
         {
           fields: "id,updated_time,message_count,participants",
         },
@@ -250,29 +257,55 @@ async function syncLinkedInMessages(account) {
 // Sync Instagram Messages
 async function syncInstagramMessages(account) {
   try {
+    if (!account.platformId) {
+      return {
+        success: false,
+        error: "Instagram account ID is missing. Reconnect Instagram.",
+        synced: 0,
+        results: [],
+      };
+    }
+
     const results = [];
-    const response = await fetch(`https://graph.instagram.com/v21.0/me/conversations?fields=id,updated_time,participants&access_token=${account.accessToken}`);
+    const response = await fetch(
+      `https://graph.instagram.com/v21.0/${account.platformId}/conversations?fields=id,updated_time,participants&access_token=${encodeURIComponent(account.accessToken)}`
+    );
     const conversations = await response.json();
+
+    if (conversations.error) {
+      throw new Error(conversations.error.message || "Failed to fetch Instagram conversations");
+    }
 
     if (!conversations.data) return { success: true, synced: 0, results: [] };
 
     for (const conversation of conversations.data) {
-      const msgsResponse = await fetch(`https://graph.instagram.com/v21.0/${conversation.id}/messages?fields=id,created_time,from,to,message&access_token=${account.accessToken}`);
+      const msgsResponse = await fetch(
+        `https://graph.instagram.com/v21.0/${conversation.id}/messages?fields=id,created_time,from,to,message,attachments&access_token=${encodeURIComponent(account.accessToken)}`
+      );
       const messages = await msgsResponse.json();
+      if (messages.error) {
+        throw new Error(messages.error.message || "Failed to fetch Instagram messages");
+      }
 
       for (const message of messages.data || []) {
         await Message.findOneAndUpdate(
-          { platformMessageId: message.id },
+          { platformMessageId: message.id, platform: "Instagram" },
           {
             userId: account.userId,
             platform: "Instagram",
             platformMessageId: message.id,
-            senderId: message.from.id,
-            senderName: message.from.username || message.from.id,
+            senderId: message.from?.id,
+            senderName: message.from?.username || message.from?.id || "Instagram User",
             content: message.message || "",
             messageType: "direct_message",
             receivedAt: new Date(message.created_time),
-            attachments: [],
+            threadId: conversation.id,
+            attachments:
+              message.attachments?.data?.map((attachment) => ({
+                type: attachment.id || attachment.type || "attachment",
+                mediaType: attachment.mime_type || attachment.type || "unknown",
+                mediaUrl: attachment.image_data?.url || attachment.video_data?.url || attachment.file_url,
+              })) || [],
           },
           { upsert: true, new: true }
         );
@@ -377,6 +410,16 @@ async function syncWhatsAppMessages(account) {
   }
 }
 
+// TikTok does not expose public direct-message sync for this integration.
+async function syncTikTokMessages(account) {
+  return {
+    success: false,
+    synced: 0,
+    results: [],
+    error: getUnsupportedTikTokMessagesMessage(),
+  };
+}
+
 // Reply to a message
 router.post("/messages/:messageId/reply", authMiddleware, async (req, res) => {
   try {
@@ -439,6 +482,10 @@ router.post("/messages/:messageId/reply", authMiddleware, async (req, res) => {
       replyResult = await replyToWhatsApp(account, originalMessage, content, imageUrl);
     } else if (originalMessage.platform === "Instagram") {
       replyResult = await replyToInstagram(account, originalMessage, content, imageUrl);
+    } else if (originalMessage.platform === "TikTok") {
+      return res.status(501).json({
+        error: getUnsupportedTikTokMessagesMessage(),
+      });
     } else {
       return res
         .status(400)
@@ -520,41 +567,57 @@ async function replyToTwitter(account, originalMessage, content, imageUrl) {
 // Reply to Facebook message
 async function replyToFacebook(account, originalMessage, content, imageUrl) {
   try {
-    FB.setAccessToken(account.accessToken);
+    if (originalMessage.messageType === "comment") {
+      FB.setAccessToken(account.accessToken);
+      const response = await new Promise((resolve, reject) => {
+        FB.api(
+          `/${originalMessage.platformMessageId}/comments`,
+          "POST",
+          { message: content },
+          (res) => (res.error ? reject(res.error) : resolve(res))
+        );
+      });
 
-    const replyData = {
-      message: content,
-    };
-
-    if (imageUrl) {
-      replyData.attachment = {
-        type: "image",
-        payload: {
-          url: imageUrl,
-        },
+      return {
+        success: true,
+        messageId: response.id,
       };
     }
 
-    const response = await new Promise((resolve, reject) => {
-      FB.api(
-        `/${originalMessage.platformMessageId}/messages`,
-        "POST",
-        replyData,
-        (res) => {
-          res.error ? reject(res.error) : resolve(res);
+    if (!account.pageId) {
+      throw new Error("Facebook page ID is missing");
+    }
+
+    const message = imageUrl
+      ? {
+          attachment: {
+            type: "image",
+            payload: { url: imageUrl },
+          },
         }
-      );
-    });
+      : { text: content };
+
+    const { data } = await axios.post(
+      `https://graph.facebook.com/v19.0/${account.pageId}/messages`,
+      {
+        recipient: { id: originalMessage.senderId },
+        messaging_type: "RESPONSE",
+        message,
+      },
+      {
+        params: { access_token: account.accessToken },
+      }
+    );
 
     return {
       success: true,
-      messageId: response.id,
+      messageId: data.message_id || data.recipient_id || `facebook_${Date.now()}`,
     };
   } catch (error) {
     console.error("Facebook reply error:", error);
     return {
       success: false,
-      error: error.message,
+      error: error.response?.data?.error?.message || error.message,
     };
   }
 }
@@ -571,16 +634,40 @@ async function replyToLinkedIn(account, originalMessage, content, imageUrl) {
 // Reply to Instagram message
 async function replyToInstagram(account, originalMessage, content, imageUrl) {
   try {
+    if (originalMessage.messageType === "comment") {
+      const response = await fetch(
+        `https://graph.instagram.com/v21.0/${originalMessage.platformMessageId}/replies`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${account.accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ message: content }),
+        }
+      );
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error?.message || "Failed to reply to Instagram comment");
+      }
+      return { success: true, messageId: result.id || `ig_comment_${Date.now()}` };
+    }
+
+    if (!account.platformId) {
+      throw new Error("Instagram account ID is missing. Reconnect Instagram.");
+    }
+
     const messageData = {
       recipient: { id: originalMessage.senderId },
-      message: { text: content }
+      messaging_type: "RESPONSE",
+      message: { text: content },
     };
     if (imageUrl) {
-        messageData.message = { attachment: { type: "image", payload: { url: imageUrl } } };
+      messageData.message = { attachment: { type: "image", payload: { url: imageUrl } } };
     }
 
     const response = await fetch(
-      `https://graph.instagram.com/v21.0/me/messages`,
+      `https://graph.instagram.com/v21.0/${account.platformId}/messages`,
       {
         method: "POST",
         headers: {
@@ -599,13 +686,13 @@ async function replyToInstagram(account, originalMessage, content, imageUrl) {
 
     return {
       success: true,
-      messageId: result.message_id || `ig_${Date.now()}`,
+      messageId: result.message_id || result.recipient_id || `ig_${Date.now()}`,
     };
   } catch (error) {
     console.error("Instagram reply error:", error);
     return {
       success: false,
-      error: error.message,
+      error: error.response?.data?.error?.message || error.message,
     };
   }
 }
@@ -668,56 +755,23 @@ async function replyToTelegram(account, originalMessage, content, imageUrl) {
 // Reply to WhatsApp message
 async function replyToWhatsApp(account, originalMessage, content, imageUrl) {
   try {
-    if (!account.accessToken || !account.pageId) {
-      throw new Error("WhatsApp account not properly configured");
-    }
-
-    const recipientPhoneNumber = originalMessage.senderId; // This is the phone number
-    const messageData = {
-      messaging_product: "whatsapp",
-      to: recipientPhoneNumber,
-      type: "text",
-      text: { body: content },
-    };
-
-    // Add image if provided
-    if (imageUrl) {
-      messageData.type = "image";
-      messageData.image = {
-        link: imageUrl,
-        caption: content,
-      };
-    }
-
-    const response = await fetch(
-      `https://graph.facebook.com/v18.0/${account.pageId}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${account.accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(messageData),
-      }
-    );
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      throw new Error(
-        result.error?.message || "Failed to send WhatsApp message"
-      );
-    }
+    const result = await sendWhatsAppMessage({
+      phoneNumberId: account.pageId,
+      accessToken: account.accessToken,
+      to: originalMessage.senderId,
+      content,
+      imageUrl,
+    });
 
     return {
       success: true,
-      messageId: result.messages?.[0]?.id || `whatsapp_${Date.now()}`,
+      messageId: result.messageId || `whatsapp_${Date.now()}`,
     };
   } catch (error) {
     console.error("WhatsApp reply error:", error);
     return {
       success: false,
-      error: error.message,
+      error: getWhatsAppApiError(error),
     };
   }
 }

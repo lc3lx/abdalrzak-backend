@@ -54,13 +54,13 @@ router.get("/tiktok/callback", async (req, res) => {
     // Exchange code for access token
     const tokenResponse = await axios.post(
       "https://open.tiktokapis.com/v2/oauth/token/",
-      {
+      new URLSearchParams({
         client_key: process.env.TIKTOK_CLIENT_KEY,
         client_secret: process.env.TIKTOK_CLIENT_SECRET,
         code: code,
         grant_type: "authorization_code",
         redirect_uri: redirectUri,
-      },
+      }),
       {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -123,12 +123,12 @@ router.post("/tiktok/refresh", authMiddleware, async (req, res) => {
 
     const refreshResponse = await axios.post(
       "https://open.tiktokapis.com/v2/oauth/token/",
-      {
+      new URLSearchParams({
         client_key: process.env.TIKTOK_CLIENT_KEY,
         client_secret: process.env.TIKTOK_CLIENT_SECRET,
         grant_type: "refresh_token",
         refresh_token: account.refreshToken,
-      },
+      }),
       {
         headers: {
           "Content-Type": "application/x-www-form-urlencoded",
@@ -178,6 +178,13 @@ router.get("/tiktok/status", authMiddleware, async (req, res) => {
       tokenExpired: isExpired,
       tokenExpiresSoon: expiresSoon,
       expiresAt: account.expiresAt,
+      capabilities: {
+        videoPosting: true,
+        photoPosting: true,
+        commentSync: false,
+        commentReply: false,
+        directMessages: false,
+      },
     });
   } catch (error) {
     console.error("TikTok status error:", error);

@@ -1,11 +1,19 @@
 import express from "express";
 import multer from "multer";
-import axios from "axios";
 import fs from "fs";
 import path from "path";
 import Account from "../../models/Account.js";
 import Post from "../../models/Post.js";
 import { authMiddleware } from "../../middleware/auth.js";
+import {
+  fetchTikTokPublishStatus,
+  getTikTokApiError,
+  initTikTokVideoPostFromFile,
+  pickTikTokPrivacyLevel,
+  queryTikTokCreatorInfo,
+  refreshTikTokTokenIfNeeded,
+  uploadTikTokVideoFile,
+} from "../../services/tiktok.js";
 
 const router = express.Router();
 
@@ -43,13 +51,24 @@ const upload = multer({
   },
 });
 
+function asBoolean(value) {
+  return value === true || value === "true" || value === "1";
+}
+
 // Upload video to TikTok
 router.post(
   "/tiktok/upload",
   authMiddleware,
   upload.single("video"),
   async (req, res) => {
-    const { title, privacy_level = "PUBLIC_TO_EVERYONE", disable_duet = false, disable_comment = false, disable_stitch = false } = req.body;
+    const {
+      title,
+      privacy_level,
+      disable_duet = false,
+      disable_comment = false,
+      disable_stitch = false,
+      is_aigc = false,
+    } = req.body;
     const videoFile = req.file;
 
     if (!videoFile) {
@@ -71,100 +90,54 @@ router.post(
         return res.status(404).json({ error: "TikTok account not connected" });
       }
 
-      // Check if token needs refresh
-      if (account.expiresAt && new Date() > account.expiresAt) {
-        console.log("TikTok token expired, refreshing...");
-        const refreshResponse = await axios.post(
-          "https://open.tiktokapis.com/v2/oauth/token/",
-          {
-            client_key: process.env.TIKTOK_CLIENT_KEY,
-            client_secret: process.env.TIKTOK_CLIENT_SECRET,
-            grant_type: "refresh_token",
-            refresh_token: account.refreshToken,
-          },
-          {
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-            },
-          }
-        );
-
-        const { access_token, refresh_token, expires_in } = refreshResponse.data;
-
-        await Account.findOneAndUpdate(
-          { userId: req.userId, platform: "TikTok" },
-          {
-            accessToken: access_token,
-            refreshToken: refresh_token,
-            expiresAt: new Date(Date.now() + expires_in * 1000),
-          }
-        );
-
-        account.accessToken = access_token;
-      }
+      await refreshTikTokTokenIfNeeded(account, req.userId);
+      const creatorInfo = await queryTikTokCreatorInfo(account.accessToken);
+      const privacyLevel = pickTikTokPrivacyLevel(creatorInfo, privacy_level);
 
       console.log("Uploading video to TikTok:", title);
 
-      // Step 1: Initialize video upload
-      const initResponse = await axios.post(
-        "https://open.tiktokapis.com/v2/post/publish/video/init/",
-        {
-          post_info: {
-            title: title,
-            privacy_level: privacy_level,
-            disable_duet: disable_duet,
-            disable_comment: disable_comment,
-            disable_stitch: disable_stitch,
-            video_cover_timestamp_ms: 1000,
-          },
-          source_info: {
-            source: "FILE_UPLOAD",
-          },
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${account.accessToken}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      const videoSize = videoFile.size || fs.statSync(videoFile.path).size;
+      const initData = await initTikTokVideoPostFromFile({
+        accessToken: account.accessToken,
+        title,
+        videoSize,
+        privacyLevel,
+        disableDuet: asBoolean(disable_duet),
+        disableComment: asBoolean(disable_comment),
+        disableStitch: asBoolean(disable_stitch),
+        isAigc: asBoolean(is_aigc),
+      });
 
-      const { publish_id, upload_url } = initResponse.data.data;
+      const { publish_id, upload_url, chunkSize } = initData;
 
-      // Step 2: Upload video file
-      const videoStream = fs.createReadStream(videoFile.path);
-      await axios.put(upload_url, videoStream, {
-        headers: {
-          "Content-Type": "video/mp4",
-        },
-        maxContentLength: Infinity,
-        maxBodyLength: Infinity,
+      await uploadTikTokVideoFile({
+        uploadUrl: upload_url,
+        filePath: videoFile.path,
+        mimeType: videoFile.mimetype,
+        videoSize,
+        chunkSize,
       });
 
       // Step 3: Check publish status
-      let publishStatus = "PROCESSING";
+      let publishStatus = "PROCESSING_UPLOAD";
+      let statusData = {};
       let attempts = 0;
       const maxAttempts = 30; // Wait up to 5 minutes (30 * 10 seconds)
 
-      while (publishStatus === "PROCESSING" && attempts < maxAttempts) {
+      while (
+        ["PROCESSING_UPLOAD", "PROCESSING_DOWNLOAD"].includes(publishStatus) &&
+        attempts < maxAttempts
+      ) {
         await new Promise((resolve) => setTimeout(resolve, 10000)); // Wait 10 seconds
 
-        const statusResponse = await axios.post(
-          `https://open.tiktokapis.com/v2/post/publish/status/fetch/?publish_id=${publish_id}`,
-          {},
-          {
-            headers: {
-              Authorization: `Bearer ${account.accessToken}`,
-              "Content-Type": "application/json",
-            },
-          }
-        );
-
-        publishStatus = statusResponse.data.data.status;
+        statusData = await fetchTikTokPublishStatus(account.accessToken, publish_id);
+        publishStatus = statusData.status;
         attempts++;
 
-        if (publishStatus === "PUBLISHED") {
-          const videoId = statusResponse.data.data.publish_id;
+        if (publishStatus === "PUBLISH_COMPLETE") {
+          const videoId =
+            statusData.publicaly_available_post_id?.[0]?.toString() ||
+            publish_id;
 
           // Save to database
           await Post.create({
@@ -185,9 +158,10 @@ router.post(
             videoId: videoId,
             publishId: publish_id,
             status: publishStatus,
+            privacyLevel,
           });
         } else if (publishStatus === "FAILED") {
-          throw new Error("Video upload failed on TikTok");
+          throw new Error(statusData.fail_reason || "Video upload failed on TikTok");
         }
       }
 
@@ -197,6 +171,7 @@ router.post(
         message: "Video is being processed",
         publishId: publish_id,
         status: publishStatus,
+        privacyLevel,
         note: "Video is still processing. Check status later.",
       });
     } catch (error) {
@@ -209,7 +184,7 @@ router.post(
 
       return res.status(500).json({
         error: "Failed to upload video to TikTok",
-        details: error.response?.data?.error?.message || error.message,
+        details: getTikTokApiError(error),
       });
     }
   }
@@ -232,29 +207,34 @@ router.get(
         return res.status(404).json({ error: "TikTok account not connected" });
       }
 
-      const statusResponse = await axios.post(
-        `https://open.tiktokapis.com/v2/post/publish/status/fetch/?publish_id=${publishId}`,
-        {},
-        {
-          headers: {
-            Authorization: `Bearer ${account.accessToken}`,
-            "Content-Type": "application/json",
-          },
-        }
+      await refreshTikTokTokenIfNeeded(account, req.userId);
+      const statusData = await fetchTikTokPublishStatus(
+        account.accessToken,
+        publishId
       );
 
-      const status = statusResponse.data.data.status;
-      const videoId = statusResponse.data.data.publish_id;
+      const status = statusData.status;
+      const videoId =
+        statusData.publicaly_available_post_id?.[0]?.toString() || publishId;
 
       res.json({
         publishId: publishId,
         status: status,
         videoId: videoId,
-        message: status === "PUBLISHED" ? "Video published successfully" : "Video is still processing",
+        uploadedBytes: statusData.uploaded_bytes,
+        downloadedBytes: statusData.downloaded_bytes,
+        failReason: statusData.fail_reason,
+        message:
+          status === "PUBLISH_COMPLETE"
+            ? "Video published successfully"
+            : "Video is still processing",
       });
     } catch (error) {
       console.error("TikTok upload status error:", error.message);
-      res.status(500).json({ error: "Failed to get upload status" });
+      res.status(500).json({
+        error: "Failed to get upload status",
+        details: getTikTokApiError(error),
+      });
     }
   }
 );

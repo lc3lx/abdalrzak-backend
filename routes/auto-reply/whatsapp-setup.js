@@ -1,6 +1,10 @@
 import express from "express";
 import Account from "../../models/Account.js";
 import { authMiddleware } from "../../middleware/auth.js";
+import {
+  getWhatsAppApiError,
+  sendWhatsAppMessage,
+} from "../../services/whatsapp.js";
 
 const router = express.Router();
 
@@ -115,42 +119,21 @@ router.post("/whatsapp/test-message", authMiddleware, async (req, res) => {
       });
     }
 
-    // Send test message
-    const response = await fetch(
-      `https://graph.facebook.com/v19.0/${account.pageId}/messages`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${account.accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: phoneNumber,
-          type: "text",
-          text: { body: message },
-        }),
-      }
-    );
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      return res.status(400).json({
-        error: `Failed to send message: ${
-          result.error?.message || "Unknown error"
-        }`,
-      });
-    }
+    const result = await sendWhatsAppMessage({
+      phoneNumberId: account.pageId,
+      accessToken: account.accessToken,
+      to: phoneNumber,
+      content: message,
+    });
 
     res.json({
       success: true,
       message: "Test message sent successfully",
-      messageId: result.messages?.[0]?.id,
+      messageId: result.messageId,
     });
   } catch (error) {
     console.error("WhatsApp test message error:", error);
-    res.status(500).json({ error: "Failed to send test message" });
+    res.status(500).json({ error: getWhatsAppApiError(error) });
   }
 });
 

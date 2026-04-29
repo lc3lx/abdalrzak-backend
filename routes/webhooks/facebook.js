@@ -26,7 +26,7 @@ router.post("/facebook/webhook", async (req, res) => {
   try {
     const signature = req.headers["x-hub-signature-256"];
     
-    if (!verifyFacebookSignature(req.body, signature)) {
+    if (!verifyFacebookSignature(req.rawBody, req.body, signature)) {
       return res.status(401).json({ error: "Invalid signature" });
     }
 
@@ -62,13 +62,17 @@ router.post("/facebook/webhook", async (req, res) => {
 async function processFacebookMessage(messagingEvent, pageId) {
   try {
     const senderId = messagingEvent.sender.id;
-    const recipientId = messagingEvent.recipient.id;
     const messageId = messagingEvent.message?.mid;
-    const messageText = messagingEvent.message?.text;
+    const messageText = messagingEvent.message?.text || "";
     const timestamp = messagingEvent.timestamp;
+    const attachments = extractFacebookAttachments(messagingEvent.message);
+
+    if (messagingEvent.message?.is_echo) {
+      return;
+    }
 
     // Skip if no message content
-    if (!messageId || !messageText) {
+    if (!messageId || (!messageText && attachments.length === 0)) {
       return;
     }
 
@@ -98,7 +102,7 @@ async function processFacebookMessage(messagingEvent, pageId) {
         content: messageText,
         messageType: "direct_message",
         receivedAt: new Date(timestamp),
-        attachments: extractFacebookAttachments(messagingEvent.message),
+        attachments,
         isRead: false,
         isArchived: false,
       },
@@ -139,17 +143,21 @@ function extractFacebookAttachments(message) {
 }
 
 // Verify Facebook webhook signature
-function verifyFacebookSignature(body, signature) {
+function verifyFacebookSignature(rawBody, body, signature) {
   if (!signature || !process.env.FACEBOOK_APP_SECRET) {
     return false;
   }
 
+  const payload = rawBody || JSON.stringify(body);
   const expectedSignature = crypto
     .createHmac("sha256", process.env.FACEBOOK_APP_SECRET)
-    .update(JSON.stringify(body))
+    .update(payload)
     .digest("hex");
 
-  return signature === `sha256=${expectedSignature}`;
+  const expected = Buffer.from(`sha256=${expectedSignature}`);
+  const received = Buffer.from(signature);
+
+  return expected.length === received.length && crypto.timingSafeEqual(expected, received);
 }
 
 // Process Facebook Comment

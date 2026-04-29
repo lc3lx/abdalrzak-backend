@@ -18,8 +18,12 @@ router.get("/instagram/auth", authMiddleware, (req, res) => {
     const baseUrl = (process.env.BASE_URL || "https://www.sushiluha.com").replace(/\/$/, "");
     const redirectUri = `${baseUrl}/api/instagram/callback`;
     console.log("[Instagram auth] Use this EXACT URL in Meta App → Redirect URIs:", redirectUri);
-    // Instagram Platform: instagram_business_basic required; instagram_business_content_publish for posting
-    const scope = "instagram_business_basic,instagram_business_content_publish";
+    const scope = [
+      "instagram_business_basic",
+      "instagram_business_content_publish",
+      "instagram_business_manage_comments",
+      "instagram_business_manage_messages",
+    ].join(",");
     const state = req.userId?.toString() || "";
     const url = `https://api.instagram.com/oauth/authorize?client_id=${encodeURIComponent(
       clientId
@@ -76,16 +80,46 @@ router.get("/instagram/callback", async (req, res) => {
       console.error("Instagram token response:", data);
       return res.status(500).send(`<html><body dir="rtl"><p>إنستغرام لم يرجّع رمز وصول. راجع لوج السيرفر.</p><script>window.close();</script></body></html>`);
     }
-    const accessToken = (data.access_token || "").toString().trim();
+    let accessToken = (data.access_token || "").toString().trim();
+    let expiresAt = data.expires_in
+      ? new Date(Date.now() + Number(data.expires_in) * 1000)
+      : undefined;
 
-    // Short-lived token (1h). Reconnect Instagram if you get "Invalid OAuth access token" when posting.
+    try {
+      const longTokenRes = await axios.get(
+        "https://graph.instagram.com/access_token",
+        {
+          params: {
+            grant_type: "ig_exchange_token",
+            client_secret: clientSecret,
+            access_token: accessToken,
+          },
+        }
+      );
+      if (longTokenRes.data?.access_token) {
+        accessToken = longTokenRes.data.access_token;
+        expiresAt = longTokenRes.data.expires_in
+          ? new Date(Date.now() + Number(longTokenRes.data.expires_in) * 1000)
+          : expiresAt;
+      }
+    } catch (longTokenError) {
+      console.warn(
+        "Instagram long-lived token exchange failed:",
+        longTokenError.response?.data?.error?.message || longTokenError.message
+      );
+    }
 
     // Rely only on the user_id returned from the token exchange
     const igUserId = data.user_id;
     const displayName = igUserId ? `user_${igUserId}` : "Instagram";
     await Account.findOneAndUpdate(
       { userId, platform: "Instagram" },
-      { accessToken, displayName, platformId: igUserId?.toString() },
+      {
+        accessToken,
+        displayName,
+        platformId: igUserId?.toString(),
+        expiresAt,
+      },
       { upsert: true, new: true }
     );
     console.log("Instagram auth completed, user:", displayName);

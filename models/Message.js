@@ -50,10 +50,14 @@ const messageSchema = new mongoose.Schema(
       {
         type: String, // URL of attachment
         mediaType: String, // image, video, document
+        mediaId: String,
+        mediaUrl: String,
+        fileName: String,
       },
     ],
     replyToMessageId: String, // For replies
     threadId: String, // For grouping related messages
+    deliveryStatus: String,
   },
   {
     timestamps: true,
@@ -63,6 +67,6 @@ const messageSchema = new mongoose.Schema(
 // Index for efficient queries
 messageSchema.index({ userId: 1, platform: 1, receivedAt: -1 });
 messageSchema.index({ userId: 1, isRead: 1 });
-messageSchema.index({ platformMessageId: 1 }, { unique: true });
+messageSchema.index({ platform: 1, platformMessageId: 1 }, { unique: true });
 
 export default mongoose.model("Message", messageSchema);

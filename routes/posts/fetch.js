@@ -59,6 +59,8 @@ router.post("/posts/sync-engagement", authMiddleware, async (req, res) => {
         results.Twitter = await syncTwitterEngagement(account, platformPosts);
       } else if (account.platform === "Facebook") {
         results.Facebook = await syncFacebookEngagement(account, platformPosts);
+      } else if (account.platform === "Instagram") {
+        results.Instagram = await syncInstagramEngagement(account, platformPosts);
       } else if (account.platform === "LinkedIn") {
         results.LinkedIn = await syncLinkedInEngagement(account, platformPosts);
       }
@@ -299,6 +301,94 @@ async function syncFacebookEngagement(account, posts) {
     errors: errors.length ? errors : undefined,
     permissionHint: hasPermissionError
       ? "Facebook requires 'pages_read_engagement' or Page Public Content Access. Reconnect Facebook from Integrations, or in App Dashboard: App Review / add test app roles."
+      : undefined,
+  };
+}
+
+async function syncInstagramEngagement(account, posts) {
+  if (!account.accessToken) {
+    return { success: false, error: "No Instagram access token", updated: 0, results: [] };
+  }
+
+  const results = [];
+  const errors = [];
+  const apiVersion = "v21.0";
+
+  for (const post of posts) {
+    try {
+      const mediaUrl = `https://graph.instagram.com/${apiVersion}/${post.platformPostId}`;
+      const { data: mediaData } = await axios.get(mediaUrl, {
+        params: {
+          fields: "id,like_count,comments_count,timestamp,permalink",
+          access_token: account.accessToken,
+        },
+      });
+
+      const likesCount = Number(mediaData.like_count) || 0;
+      const commentsCount = Number(mediaData.comments_count) || 0;
+
+      await Post.findByIdAndUpdate(post._id, {
+        "engagement.likes": likesCount,
+        "engagement.comments": commentsCount,
+        "engagement.shares": 0,
+        "engagement.lastUpdated": new Date(),
+      });
+
+      try {
+        const { data: commentsData } = await axios.get(
+          `https://graph.instagram.com/${apiVersion}/${post.platformPostId}/comments`,
+          {
+            params: {
+              fields: "id,text,username,timestamp,like_count",
+              access_token: account.accessToken,
+            },
+          }
+        );
+
+        for (const comment of commentsData.data || []) {
+          await Comment.findOneAndUpdate(
+            { platformCommentId: comment.id, platform: "Instagram" },
+            {
+              postId: post._id,
+              platformCommentId: comment.id,
+              platform: "Instagram",
+              authorName: comment.username || "Instagram User",
+              content: comment.text || "",
+              createdAt: comment.timestamp ? new Date(comment.timestamp) : new Date(),
+              "engagement.likes": Number(comment.like_count) || 0,
+            },
+            { upsert: true, new: true }
+          );
+        }
+      } catch (commentError) {
+        console.warn(
+          "Instagram comments sync failed:",
+          commentError.response?.data?.error?.message || commentError.message
+        );
+      }
+
+      results.push({
+        postId: post.platformPostId,
+        engagement: {
+          likes: likesCount,
+          comments: commentsCount,
+          shares: 0,
+        },
+      });
+    } catch (error) {
+      const msg = error.response?.data?.error?.message || error.message;
+      errors.push({ postId: post.platformPostId, message: msg });
+      results.push({ postId: post.platformPostId, error: msg, engagement: null });
+    }
+  }
+
+  return {
+    success: errors.length === 0,
+    updated: results.filter((result) => result.engagement).length,
+    results,
+    errors: errors.length ? errors : undefined,
+    permissionHint: errors.length
+      ? "Instagram requires instagram_business_manage_comments for comment sync and instagram_business_basic for media metrics. Reconnect Instagram after approving the new scopes."
       : undefined,
   };
 }

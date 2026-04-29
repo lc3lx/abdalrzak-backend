@@ -15,7 +15,7 @@ router.get("/facebook/auth", authMiddleware, (req, res) => {
       process.env.FACEBOOK_APP_ID
     }&redirect_uri=${encodeURIComponent(
       redirectUri
-    )}&scope=pages_read_engagement,pages_manage_posts,pages_show_list,pages_read_user_content,pages_messaging`;
+    )}&scope=pages_read_engagement,pages_manage_posts,pages_manage_engagement,pages_manage_metadata,pages_show_list,pages_read_user_content,pages_messaging`;
     req.session.userId = req.userId;
     res.json({ url, redirectUri });
   } catch (error) {
@@ -86,6 +86,26 @@ router.get("/facebook/callback", async (req, res) => {
       },
       { upsert: true, new: true }
     );
+
+    try {
+      await axios.post(
+        `https://graph.facebook.com/v19.0/${page.id}/subscribed_apps`,
+        null,
+        {
+          params: {
+            subscribed_fields: "messages,messaging_postbacks,feed",
+            access_token: page.access_token,
+          },
+        }
+      );
+      console.log("Facebook page subscribed to webhook fields:", page.name);
+    } catch (subscriptionError) {
+      console.warn(
+        "Facebook webhook subscription failed:",
+        subscriptionError.response?.data?.error?.message || subscriptionError.message
+      );
+    }
+
     console.log("Facebook auth completed, connected as:", page.name);
     res.send(`
       <script>

@@ -7,6 +7,7 @@ import { TwitterApi } from "twitter-api-v2";
 import FB from "fb";
 import axios from "axios";
 import { authMiddleware } from "../../middleware/auth.js";
+import { getUnsupportedTikTokCommentsMessage } from "../../services/tiktok.js";
 
 const router = express.Router();
 
@@ -115,28 +116,12 @@ router.post("/comments/:commentId/reply", authMiddleware, async (req, res) => {
         senderId: account.platformId,
         senderName: account.displayName,
         content: content,
-        messageType: "comment",
+        messageType: "reply",
         receivedAt: new Date(),
         replyToMessageId: comment.platformCommentId,
       });
 
       await message.save();
-
-      // Trigger auto-reply if needed
-      const baseUrl = process.env.BASE_URL || "https://www.sushiluha.com";
-      try {
-        await axios.post(
-          `${baseUrl}/api/auto-reply/process`,
-          { messageId: message._id },
-          {
-            headers: {
-              Authorization: `Bearer ${process.env.INTERNAL_API_TOKEN || "internal"}`,
-            },
-          }
-        );
-      } catch (error) {
-        console.error("Error triggering auto-reply:", error);
-      }
 
       res.json({
         success: true,
@@ -218,7 +203,7 @@ async function replyToInstagramComment(account, comment, content) {
   try {
     // Instagram Graph API for replying to comments
     const response = await axios.post(
-      `https://graph.instagram.com/${comment.platformCommentId}/replies`,
+      `https://graph.instagram.com/v21.0/${comment.platformCommentId}/replies`,
       {
         message: content,
       },
@@ -242,40 +227,10 @@ async function replyToInstagramComment(account, comment, content) {
 }
 // Reply to TikTok comment
 async function replyToTikTokComment(account, comment, content) {
-  try {
-    const post = await Post.findById(comment.postId);
-    if (!post) throw new Error("Post not found");
-
-    const response = await axios.post(
-      `https://open.tiktokapis.com/v2/comment/reply/`,
-      {
-        video_id: post.platformPostId,
-        comment_id: comment.platformCommentId,
-        text: content,
-      },
-      {
-        headers: {
-          Authorization: `Bearer ${account.accessToken}`,
-          "Content-Type": "application/json",
-        },
-      }
-    );
-
-    // Some TikTok scopes might not allow this unless approved, so we gracefully handle mock fallback
-    if (response.data?.error?.code === 'not_authorized') {
-        throw new Error("TikTok API does not allow comment replies without enterprise permissions.");
-    }
-
-    return {
-      success: true,
-      commentId: response.data?.data?.comment_id || `tt_comment_${Date.now()}`,
-    };
-  } catch (error) {
-    return {
-      success: false,
-      error: error.response?.data?.error?.message || error.message,
-    };
-  }
+  return {
+    success: false,
+    error: getUnsupportedTikTokCommentsMessage(),
+  };
 }
 
 export default router;
